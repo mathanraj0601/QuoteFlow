@@ -1,0 +1,32 @@
+[project]
+name = "gmail-trigger-poc"
+version = "0.1.0"
+description = "Local POC: poll a Gmail inbox and hand new emails to a processing pipeline (QuoteFlow Step 1)."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "google-api-python-client>=2.100.0",
+    "google-auth-httplib2>=0.2.0",
+    "google-auth-oauthlib>=1.2.0",
+    "fastapi>=0.110.0",
+    "uvicorn[standard]>=0.29.0",
+    "python-dotenv>=1.0.0",
+    "colorama>=0.4.6",
+]
+
+[project.scripts]
+gmail-trigger-poc = "gmail_trigger_poc.app:run"
+
+[build-system]
+requires = ["uv_build>=0.11.7,<0.12.0"]
+build-backend = "uv_build"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "httpx>=0.27.0",
+]

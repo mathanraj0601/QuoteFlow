@@ -1,0 +1,20 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# Secrets / local state — never commit
+.env
+credentials.json
+token.json
+token*.json
+last_history_id.json
+
+# Test / tooling caches
+.pytest_cache/
