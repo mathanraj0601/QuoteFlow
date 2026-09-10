@@ -101,13 +101,24 @@ The Gmail poller also needs `credentials.json` (Google Cloud OAuth client, Deskt
 app) in this folder — first run opens a browser once for consent, then caches
 `token.json`. Set `ENABLE_POLLER=false` to run the API alone.
 
-**Dashboard:** open <http://127.0.0.1:8000/> — a single-page "Supplier Outreach
-Desk" ([src/gmail_trigger_poc/web/index.html](src/gmail_trigger_poc/web/index.html),
-vanilla JS, served by the API) wired to every endpoint: live enquiry list, the
-stacked supplier-card builder with per-field tags + live body re-render, Save
-(`PATCH`) / Send (`POST …/send`), a supplier directory, and a **Simulate email**
-button that `POST`s `/process-email` — the same call the poller makes — so the
-whole flow is demoable without sending real mail.
+### Dashboard
+
+Open <http://127.0.0.1:8000/> — the **Supplier Outreach Desk**: live enquiry
+list, the stacked supplier-card builder (per-field `AI-GENERATED` /
+`FROM-DATABASE` / `NEEDS-REVIEW` tags + live body re-render), Save (`PATCH`) /
+Send (`POST …/send`), a supplier directory, and a **Simulate email** button that
+`POST`s `/process-email` — the same call the poller makes — so the whole flow is
+demoable without sending real mail.
+
+```bash
+cd frontend && npm install && npm run build    # -> frontend/dist/, served by the API at /
+```
+
+- **React + Vite** app in [frontend/](frontend/) (`src/App.jsx` + components).
+  `app.py` serves `frontend/dist/` at `/` when it exists.
+- Iterating on the UI: `npm run dev` (port 5173, proxies the API to `:8000`).
+- No Node? The API falls back to a dependency-free vanilla-JS build of the same
+  screen at [src/gmail_trigger_poc/web/index.html](src/gmail_trigger_poc/web/index.html).
 
 ```bash
 curl localhost:8000/health

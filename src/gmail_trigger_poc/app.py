@@ -16,6 +16,7 @@ from pathlib import Path
 
 from fastapi import Body, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 
 from gmail_trigger_poc import repository
 from gmail_trigger_poc.config import get_settings
@@ -62,13 +63,22 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="gmail-trigger-poc", lifespan=lifespan)
 
-_WEB_DIR = Path(__file__).with_name("web")
+# Dashboard: the built React app (frontend/dist) if present, else the no-build
+# fallback in web/. Both are the same "Supplier Outreach Desk" over the API.
+_PKG_ROOT = Path(__file__).resolve().parent
+_REPO_ROOT = _PKG_ROOT.parent.parent
+_REACT_DIST = _REPO_ROOT / "frontend" / "dist"
+_WEB_FALLBACK = _PKG_ROOT / "web" / "index.html"
+
+if (_REACT_DIST / "assets").is_dir():
+    app.mount("/assets", StaticFiles(directory=_REACT_DIST / "assets"), name="assets")
 
 
 @app.get("/", include_in_schema=False)
 def dashboard() -> FileResponse:
     """The Supplier Outreach Desk — a single-page dashboard over all the endpoints."""
-    return FileResponse(_WEB_DIR / "index.html")
+    index = _REACT_DIST / "index.html"
+    return FileResponse(index if index.is_file() else _WEB_FALLBACK)
 
 
 @contextmanager

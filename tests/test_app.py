@@ -33,7 +33,9 @@ def test_dashboard_served(client):
     r = client.get("/")
     assert r.status_code == 200
     assert "text/html" in r.headers["content-type"]
-    assert "QuoteFlow" in r.text and "/enquiry/" in r.text  # SPA wired to the API
+    assert "QuoteFlow" in r.text
+    # React build (assets shell) or the no-build fallback (inline API calls)
+    assert "/assets/" in r.text or "/enquiry/" in r.text
 
 
 def test_health(client):

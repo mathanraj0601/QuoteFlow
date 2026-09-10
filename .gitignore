@@ -28,3 +28,8 @@ smoke_*
 
 # Test / tooling caches
 .pytest_cache/
+
+# Frontend (React + Vite)
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
