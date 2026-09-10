@@ -126,17 +126,93 @@ def run(settings: Settings | None = None, *, reset: bool = True) -> dict[str, in
     return counts
 
 
+def load_demo(settings: Settings | None = None, conn=None) -> dict[str, int]:
+    """Overlay the demo enquiries (`settings.demo_file`) onto an already-seeded DB.
+
+    Six client enquiries frozen at different v2SQ lifecycle stages (new /
+    processing / drafted / all-sent) so a walkthrough can show every Desk badge
+    at once. IDs are in a 9000+ block; `INSERT OR IGNORE` makes this re-runnable.
+    Needs the main seed loaded first (it references seed client/supplier/product ids).
+    """
+    from gmail_trigger_poc.llm import render_body
+
+    settings = settings or get_settings()
+    demo_path = Path(settings.demo_file)
+    if not demo_path.exists():
+        raise FileNotFoundError(f"demo file not found: {demo_path} (set QUOTEFLOW_DEMO_FILE)")
+    data = json.loads(demo_path.read_text(encoding="utf-8"))
+    template = data["body_template"]
+
+    own = conn is None
+    conn = conn or connect(settings)
+    seen = {"email_threads": 0, "supplier_quote_requests": 0}
+    try:
+        for enq in data["enquiries"]:
+            extracted = enq.get("extracted")
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO email_threads
+                    (id, gmail_message_id, thread_id, from_email, to_email, subject,
+                     body_text, direction, extracted_data_json, processed_at,
+                     status, pipeline_stage, pipeline_updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, 'inbound', ?, ?, ?, ?, ?)
+                """,
+                (
+                    enq["id"], enq["gmail_message_id"], enq["id"],
+                    enq["from_email"], settings.broker_email, enq["subject"],
+                    enq["body_text"],
+                    json.dumps(extracted) if extracted is not None else None,
+                    enq["processed_at"], enq["status"], enq["pipeline_stage"],
+                    enq["processed_at"],
+                ),
+            )
+            seen["email_threads"] += 1
+            for d in enq.get("supplier_drafts", []):
+                conn.execute(
+                    """
+                    INSERT OR IGNORE INTO supplier_quote_requests
+                        (id, email_thread_id, client_id, supplier_id, product_id, quantity,
+                         specs_summary, match_score, draft_to, draft_subject, draft_body,
+                         draft_body_template, draft_fields_json, draft_edit_mode,
+                         status, gmail_message_id, created_at, sent_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'fields', ?, NULL, ?, ?)
+                    """,
+                    (
+                        d["id"], enq["id"], enq["client_id"], d["supplier_id"],
+                        d["product_id"], d.get("quantity"), d.get("specs_summary"),
+                        d.get("match_score"), d["draft_to"], d["draft_subject"],
+                        render_body(template, d["fields"]),
+                        template, json.dumps(d["fields"]),
+                        d["status"], enq["processed_at"], d.get("sent_at"),
+                    ),
+                )
+                seen["supplier_quote_requests"] += 1
+        conn.commit()
+    finally:
+        if own:
+            conn.close()
+    logger.info("load_demo: %s", ", ".join(f"{k}={v}" for k, v in seen.items()))
+    return seen
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--keep", action="store_true",
         help="load into the existing DB/chroma instead of resetting them first",
     )
+    parser.add_argument(
+        "--demo", action="store_true",
+        help="also overlay data/demo_enquiries.json (enquiries at mixed lifecycle stages)",
+    )
     args = parser.parse_args()
 
     settings = get_settings()
     configure_logging(settings.log_level)
     counts = run(settings, reset=not args.keep)
+    if args.demo:
+        demo_counts = load_demo(settings)
+        counts.update({f"_demo_{k}": v for k, v in demo_counts.items()})
     print("Seeded and embedded - ready for /process-email")
     for k, v in counts.items():
         print(f"  {k}: {v}")

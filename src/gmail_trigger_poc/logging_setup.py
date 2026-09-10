@@ -10,7 +10,10 @@ colour-coded ``[TAG]`` per subsystem so the code flow is easy to scan:
     ^time    ^lvl   ^tag   ^message
 
 Tags:  AUTH  OAuth / token          POLL  polling loop
-       GMAIL raw Gmail API calls    PIPE  process_email pipeline
+       GMAIL raw Gmail API calls    PIPE  process_email orchestrator
+       LLM   classify/extract/draft MATCH vector search + rerank
+       VDB   ChromaDB               REPO  SQL reads/writes
+       DB    schema / connect       SEED  one-time backfill
        HTTP  FastAPI request layer  CFG   config / startup
 
 - Colour is on when stdout is a TTY and ``NO_COLOR`` is unset; force it with
@@ -44,12 +47,21 @@ _LEVEL_COLOUR = {
     "ERROR": "\033[31m",      # red
     "CRIT": "\033[1;41m",     # bold white on red
 }
-# module suffix -> (short tag, colour)
+# module suffix -> (short tag, colour). One colour per subsystem so a pipeline
+# run reads like a story: PIPE drives, and each step it delegates to shows its
+# own colour — LLM (classify/extract/draft), MATCH (vector + rerank), VDB
+# (Chroma), REPO (SQL writes), DB (schema/connect), SEED (backfill).
 _TAG_MAP = {
     "auth": ("AUTH ", "\033[35m"),          # magenta
     "poller": ("POLL ", "\033[36m"),        # cyan
     "gmail_client": ("GMAIL", "\033[34m"),  # blue
-    "pipeline": ("PIPE ", "\033[32m"),      # green
+    "pipeline": ("PIPE ", "\033[1;32m"),    # bold green — the orchestrator
+    "llm": ("LLM  ", "\033[95m"),           # bright magenta
+    "matching": ("MATCH", "\033[96m"),      # bright cyan
+    "vectorstore": ("VDB  ", "\033[94m"),   # bright blue
+    "repository": ("REPO ", "\033[92m"),    # bright green
+    "db": ("DB   ", "\033[90m"),            # grey
+    "seed": ("SEED ", "\033[93m"),          # bright yellow
     "app": ("HTTP ", "\033[33m"),           # yellow
     "config": ("CFG  ", "\033[2m"),         # dim
     "logging_setup": ("CFG  ", "\033[2m"),

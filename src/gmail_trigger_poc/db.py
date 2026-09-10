@@ -38,13 +38,41 @@ def connect(settings: Settings | None = None) -> sqlite3.Connection:
     return conn
 
 
+# Additive columns that a pre-existing DB (created before this column landed)
+# won't have. `CREATE TABLE IF NOT EXISTS` can't add them to a live table, so
+# `init_db` ALTERs them in. Column -> SQLite type/default clause.
+_ADDITIVE_COLUMNS: dict[str, dict[str, str]] = {
+    "email_threads": {
+        "status": "TEXT",
+        "pipeline_stage": "TEXT",
+        "pipeline_updated_at": "TIMESTAMP",
+        "drafts_total": "INTEGER",
+    },
+}
+
+
+def _apply_additive_migrations(conn: sqlite3.Connection) -> None:
+    """ALTER in any `_ADDITIVE_COLUMNS` a pre-existing DB is missing. Idempotent."""
+    for table, columns in _ADDITIVE_COLUMNS.items():
+        have = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}
+        for name, decl in columns.items():
+            if name not in have:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
+                logger.info("migrated: %s.%s added", table, name)
+
+
 def init_db(settings: Settings | None = None, conn: sqlite3.Connection | None = None) -> None:
-    """Create every table/index if missing. Idempotent (schema uses IF NOT EXISTS)."""
+    """Create every table/index if missing, then apply additive column migrations.
+
+    Idempotent: the schema uses IF NOT EXISTS, and `_apply_additive_migrations`
+    only ALTERs columns that a pre-existing DB is missing.
+    """
     settings = settings or get_settings()
     own = conn is None
     conn = conn or connect(settings)
     try:
         conn.executescript(SCHEMA_PATH.read_text(encoding="utf-8"))
+        _apply_additive_migrations(conn)
         conn.commit()
         logger.debug("schema applied from %s", SCHEMA_PATH.name)
     finally:

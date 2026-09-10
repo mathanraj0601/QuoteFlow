@@ -33,6 +33,7 @@ def test_non_enquiry_is_logged_not_drafted(fresh_store, fresh_conn):
         "SELECT * FROM email_threads WHERE gmail_message_id = ?", (email["id"],)
     ).fetchone()
     assert row is not None and row["direction"] == "inbound"
+    assert row["status"] == "logged"  # v2SQ lifecycle column
     assert fresh_conn.execute(
         "SELECT COUNT(*) AS c FROM supplier_quote_requests WHERE email_thread_id = ?",
         (row["id"],),
@@ -44,6 +45,12 @@ def test_client_enquiry_drafts_supplier_outreach(fresh_store, fresh_conn):
     assert result["status"] == "drafted"
     ids = result["supplier_quote_request_ids"]
     assert len(ids) >= 1
+
+    thread = fresh_conn.execute(
+        "SELECT status, pipeline_stage FROM email_threads WHERE id = ?",
+        (result["email_thread_id"],),
+    ).fetchone()
+    assert thread["status"] == "drafted" and thread["pipeline_stage"] == "drafted"
 
     rows = fresh_conn.execute(
         "SELECT * FROM supplier_quote_requests WHERE id IN (%s)"

@@ -1,13 +1,15 @@
 """The two LLM steps of the pipeline: classify+extract, and draft supplier outreach.
 
-Two interchangeable providers behind one interface:
+Three interchangeable providers behind one interface:
 
   StubProvider     - deterministic regex/keyword logic. No network, no key.
                      Keeps the whole pipeline demoable and the tests fast.
   AnthropicProvider - real Claude (`claude-opus-5` by default). Used when a key
                      or `ant auth` profile resolves, or LLM_PROVIDER=anthropic.
+  OllamaProvider   - a local model served by Ollama (LLM_PROVIDER=ollama).
+                     Same prompts; OLLAMA_MODEL must be pulled first.
 
-`get_provider()` picks one from settings (`auto` | `anthropic` | `stub`).
+`get_provider()` picks one from settings (`auto` | `anthropic` | `ollama` | `stub`).
 
 draft_supplier_outreach() returns the shape Plan B §5 specifies:
     {to, subject, body_template, fields: [{key,label,value,tag,confidence}], body}
@@ -21,6 +23,7 @@ import json
 import logging
 import os
 import re
+import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Protocol
@@ -347,6 +350,127 @@ def _extract_json(text: str) -> dict:
         return json.loads(m.group(0))
 
 
+# --------------------------------------------------------------------------- #
+# Prompt / response logging (LLM_LOG_IO) — one place, both real providers
+# --------------------------------------------------------------------------- #
+
+_IO_CAP = 8000  # chars of prompt / response logged verbatim before truncation
+
+
+def _cap(text: str | None) -> str:
+    text = text or ""
+    if len(text) <= _IO_CAP:
+        return text
+    return text[:_IO_CAP] + f"\n... (+{len(text) - _IO_CAP} more chars)"
+
+
+def _emit_block(gutter: str, text: str) -> None:
+    """Log `text` one line per record so EVERY line carries the [LLM] tag."""
+    for line in (_cap(text).splitlines() or [""]):
+        logger.info("%s%s", gutter, line)
+
+
+def _log_llm_request(kind: str, model: str, system: str, user: str, *, enabled: bool) -> None:
+    if not enabled:
+        return
+    logger.info("+---- LLM REQUEST  ->  %s  |  %s", model, kind)
+    logger.info("| SYSTEM PROMPT (%d chars)", len(system or ""))
+    _emit_block("| ", system)
+    logger.info("| USER PROMPT (%d chars)", len(user or ""))
+    _emit_block("| ", user)
+    logger.info("+---- sent; awaiting model ...")
+
+
+def _log_llm_response(kind: str, text: str, elapsed: float, *, enabled: bool) -> None:
+    if not enabled:
+        return
+    logger.info("+---- LLM RESPONSE  <-  %s  |  %.1fs  |  %d chars", kind, elapsed, len(text or ""))
+    _emit_block("| ", text)
+    logger.info("+---- end response")
+
+
+# --------------------------------------------------------------------------- #
+# JSON -> domain mapping, shared by every real (non-stub) provider
+# --------------------------------------------------------------------------- #
+
+
+def _json_to_extraction(data: dict) -> Extraction:
+    scenario = data.get("scenario")
+    if scenario not in SCENARIOS:
+        scenario = "other"
+    qty = data.get("quantity")
+    try:
+        qty = int(qty) if qty is not None else None
+    except (TypeError, ValueError):
+        qty = None
+    urgency = data.get("urgency")
+    return Extraction(
+        scenario=scenario,
+        product_description=str(data.get("product_description") or "")[:300],
+        quantity=qty,
+        unit_of_measure=data.get("unit_of_measure"),
+        delivery_terms=data.get("delivery_terms"),
+        destination=data.get("destination"),
+        specifications=data.get("specifications"),
+        client_name=data.get("client_name"),
+        client_company=data.get("client_company"),
+        urgency=urgency if urgency in {"low", "normal", "high"} else "normal",
+        confidence=float(data.get("confidence", 0.7) or 0.7),
+    )
+
+
+def _json_to_draft(
+    data: dict, enquiry: Extraction, candidate: dict, settings: Settings
+) -> dict:
+    fields = _sanitize_fields(data.get("fields"))
+    fixed = {
+        "supplier_name": candidate.get("supplier_name") or "team",
+        "product_name": candidate.get("product_name") or enquiry.product_description,
+        "client_company": enquiry.client_company or "our client",
+        "client_name": enquiry.client_name or "our client",
+        "broker_name": settings.broker_name,
+        "broker_email": settings.broker_email,
+    }
+    body_template = substitute(str(data.get("body_template") or ""), fixed)
+    # Models sometimes drop {{token}}s into the subject too; render it the same
+    # way as the body so a stored subject is never a raw template.
+    subject = str(data.get("subject") or f"RFQ - {fixed['product_name']}")
+    subject = render_body(substitute(subject, fixed), fields)
+    return {
+        "to": candidate.get("supplier_email") or "",
+        "subject": subject,
+        "body_template": body_template,
+        "fields": fields,
+        "body": render_body(body_template, fields),
+    }
+
+
+def _classify_user_prompt(email_data: dict) -> str:
+    return (
+        f"From: {email_data.get('from')}\n"
+        f"Subject: {email_data.get('subject')}\n\n"
+        f"{email_data.get('body') or ''}"
+    )
+
+
+def _draft_user_prompt(enquiry: Extraction, candidate: dict, settings: Settings) -> str:
+    row = {
+        k: candidate.get(k)
+        for k in (
+            "supplier_name", "supplier_email", "product_name", "product_specifications",
+            "unit_price", "moq", "lead_time_days", "supplier_certifications",
+            "unit_of_measure",
+        )
+    }
+    return (
+        "CLIENT ENQUIRY (extracted):\n"
+        f"{json.dumps(enquiry.as_dict(), indent=2)}\n\n"
+        "SUPPLIER CATALOGUE ROW:\n"
+        f"{json.dumps(row, indent=2, default=str)}\n\n"
+        f"Broker: {settings.broker_name} <{settings.broker_email}>"
+    )
+
+
 class AnthropicProvider:
     name = "anthropic"
 
@@ -359,11 +483,14 @@ class AnthropicProvider:
         self._client = anthropic.Anthropic()
         self._model = settings.llm_model
         self._max_tokens = settings.llm_max_tokens
+        self._log_io = settings.llm_log_io
 
-    def _call(self, system: str, user: str) -> dict:
+    def _call(self, system: str, user: str, *, kind: str = "llm") -> dict:
         # classify/extract/draft are short structured tasks -> effort "low".
         # Adaptive thinking stays on (default on Opus 5) and its tokens count
         # against max_tokens, so keep max_tokens roomy (LLM_MAX_TOKENS).
+        _log_llm_request(kind, self._model, system, user, enabled=self._log_io)
+        started = time.perf_counter()
         try:
             resp = self._client.messages.create(
                 model=self._model,
@@ -391,68 +518,24 @@ class AnthropicProvider:
             raise LLMError("Claude response hit max_tokens — raise LLM_MAX_TOKENS")
 
         text = "".join(b.text for b in resp.content if getattr(b, "type", None) == "text")
+        _log_llm_response(kind, text, time.perf_counter() - started, enabled=self._log_io)
         try:
             return _extract_json(text)
         except json.JSONDecodeError as e:
             raise LLMError(f"Claude returned unparseable JSON: {text[:200]!r}") from e
 
     def classify_and_extract(self, email_data: dict) -> Extraction:
-        user = (
-            f"From: {email_data.get('from')}\n"
-            f"Subject: {email_data.get('subject')}\n\n"
-            f"{email_data.get('body') or ''}"
-        )
-        data = self._call(_EXTRACT_SYSTEM, user)
-        scenario = data.get("scenario")
-        if scenario not in SCENARIOS:
-            scenario = "other"
-        qty = data.get("quantity")
-        try:
-            qty = int(qty) if qty is not None else None
-        except (TypeError, ValueError):
-            qty = None
-        return Extraction(
-            scenario=scenario,
-            product_description=str(data.get("product_description") or "")[:300],
-            quantity=qty,
-            unit_of_measure=data.get("unit_of_measure"),
-            delivery_terms=data.get("delivery_terms"),
-            destination=data.get("destination"),
-            specifications=data.get("specifications"),
-            client_name=data.get("client_name"),
-            client_company=data.get("client_company"),
-            urgency=data.get("urgency") if data.get("urgency") in {"low", "normal", "high"}
-            else "normal",
-            confidence=float(data.get("confidence", 0.7) or 0.7),
+        return _json_to_extraction(
+            self._call(_EXTRACT_SYSTEM, _classify_user_prompt(email_data), kind="classify+extract")
         )
 
     def draft_supplier_outreach(
         self, enquiry: Extraction, candidate: dict, settings: Settings
     ) -> dict:
-        user = (
-            "CLIENT ENQUIRY (extracted):\n"
-            f"{json.dumps(enquiry.as_dict(), indent=2)}\n\n"
-            "SUPPLIER CATALOGUE ROW:\n"
-            f"{json.dumps({k: candidate.get(k) for k in ('supplier_name','supplier_email','product_name','product_specifications','unit_price','moq','lead_time_days','supplier_certifications','unit_of_measure')}, indent=2, default=str)}\n\n"
-            f"Broker: {settings.broker_name} <{settings.broker_email}>"
+        data = self._call(
+            _DRAFT_SYSTEM, _draft_user_prompt(enquiry, candidate, settings), kind="draft outreach"
         )
-        data = self._call(_DRAFT_SYSTEM, user)
-        fields = _sanitize_fields(data.get("fields"))
-        fixed = {
-            "supplier_name": candidate.get("supplier_name") or "team",
-            "product_name": candidate.get("product_name") or enquiry.product_description,
-            "broker_name": settings.broker_name,
-            "broker_email": settings.broker_email,
-        }
-        body_template = substitute(str(data.get("body_template") or ""), fixed)
-        body = render_body(body_template, fields)
-        return {
-            "to": candidate.get("supplier_email") or "",
-            "subject": str(data.get("subject") or f"RFQ - {fixed['product_name']}"),
-            "body_template": body_template,
-            "fields": fields,
-            "body": body,
-        }
+        return _json_to_draft(data, enquiry, candidate, settings)
 
 
 def _sanitize_fields(raw: Any) -> list[dict]:
@@ -479,6 +562,86 @@ def _sanitize_fields(raw: Any) -> list[dict]:
 
 
 # --------------------------------------------------------------------------- #
+# Ollama provider (local models via the Ollama HTTP server)
+# --------------------------------------------------------------------------- #
+
+
+class OllamaProvider:
+    """Local LLM via an Ollama server. Same prompts as AnthropicProvider.
+
+    Uses Ollama's native /api/chat with `format: "json"` so the model is
+    constrained to emit a single JSON object. The model named by OLLAMA_MODEL
+    must already be pulled (`ollama pull <model>`).
+    """
+
+    name = "ollama"
+
+    def __init__(self, settings: Settings) -> None:
+        try:
+            import httpx
+        except ImportError as e:  # pragma: no cover - httpx ships with fastapi
+            raise LLMError("httpx not installed") from e
+        self._httpx = httpx
+        self._host = settings.ollama_host
+        self._model = settings.ollama_model
+        self._timeout = settings.ollama_timeout
+        self._log_io = settings.llm_log_io
+
+    def _call(self, system: str, user: str, *, kind: str = "llm") -> dict:
+        url = f"{self._host}/api/chat"
+        payload = {
+            "model": self._model,
+            "stream": False,
+            "format": "json",
+            # num_predict caps generation: small models sometimes run away emitting
+            # whitespace under format:"json" until they hit the wall (looks like a hang).
+            "options": {"temperature": 0, "num_predict": 1536},
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+        }
+        _log_llm_request(kind, self._model, system, user, enabled=self._log_io)
+        started = time.perf_counter()
+        try:
+            resp = self._httpx.post(url, json=payload, timeout=self._timeout)
+        except self._httpx.HTTPError as e:
+            raise LLMError(
+                f"Ollama request to {url} failed: {e} "
+                f"(is `ollama serve` running and is OLLAMA_HOST correct?)"
+            ) from e
+        if resp.status_code == 404:
+            raise LLMError(
+                f"Ollama has no model '{self._model}' - run `ollama pull {self._model}`"
+            )
+        if resp.status_code >= 400:
+            raise LLMError(f"Ollama returned HTTP {resp.status_code}: {resp.text[:200]}")
+
+        try:
+            content = resp.json()["message"]["content"]
+        except (ValueError, KeyError, TypeError) as e:
+            raise LLMError(f"Ollama response was not in the expected shape: {resp.text[:200]!r}") from e
+        _log_llm_response(kind, content, time.perf_counter() - started, enabled=self._log_io)
+        try:
+            return _extract_json(content)
+        except json.JSONDecodeError as e:
+            raise LLMError(f"Ollama returned unparseable JSON: {content[:200]!r}") from e
+
+    def classify_and_extract(self, email_data: dict) -> Extraction:
+        return _json_to_extraction(
+            self._call(_EXTRACT_SYSTEM, _classify_user_prompt(email_data), kind="classify+extract")
+        )
+
+    def draft_supplier_outreach(
+        self, enquiry: Extraction, candidate: dict, settings: Settings
+    ) -> dict:
+        data = self._call(
+            _DRAFT_SYSTEM, _draft_user_prompt(enquiry, candidate, settings), kind="draft outreach"
+        )
+        return _json_to_draft(data, enquiry, candidate, settings)
+
+
+# --------------------------------------------------------------------------- #
 # Selection
 # --------------------------------------------------------------------------- #
 
@@ -501,6 +664,14 @@ def get_provider(settings: Settings | None = None) -> Provider:
     if choice == "anthropic":
         provider = AnthropicProvider(settings)
         logger.info("LLM provider: anthropic (model=%s)", settings.llm_model)
+        return provider
+
+    if choice == "ollama":
+        provider = OllamaProvider(settings)
+        logger.info(
+            "LLM provider: ollama (model=%s, host=%s)",
+            settings.ollama_model, settings.ollama_host,
+        )
         return provider
 
     # auto

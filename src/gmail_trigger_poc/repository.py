@@ -93,9 +93,21 @@ def find_thread_by_message_id(
 
 
 def insert_inbound_thread(
-    email_data: dict, extraction, conn: sqlite3.Connection, *, broker_email: str
+    email_data: dict,
+    extraction,
+    conn: sqlite3.Connection,
+    *,
+    broker_email: str,
+    status: str = "processing",
+    pipeline_stage: str = "extracted",
 ) -> int:
-    """Insert (or return existing) the inbound email_threads row. Returns its id."""
+    """Insert (or return existing) the inbound email_threads row. Returns its id.
+
+    `status` / `pipeline_stage` seed the v2SQ lifecycle columns. The pipeline
+    inserts the row only after classify+extract has run, so the row is born at
+    'processing'/'extracted' for an enquiry and 'logged'/None for a non-enquiry;
+    `set_pipeline_stage` / `finalize_thread_status` move it on from there.
+    """
     gmail_message_id = email_data.get("id")
     existing = find_thread_by_message_id(gmail_message_id, conn)
     if existing:
@@ -108,8 +120,9 @@ def insert_inbound_thread(
             """
             INSERT INTO email_threads
                 (gmail_message_id, thread_id, gmail_thread_id, from_email, to_email, subject,
-                 body_text, direction, extracted_data_json, processed_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, 'inbound', ?, ?)
+                 body_text, direction, extracted_data_json, processed_at,
+                 status, pipeline_stage, pipeline_updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 'inbound', ?, ?, ?, ?, ?)
             """,
             (
                 gmail_message_id,
@@ -121,6 +134,9 @@ def insert_inbound_thread(
                 email_data.get("body"),
                 json.dumps(extraction.as_dict()),
                 _now(),
+                status,
+                pipeline_stage,
+                _now(),
             ),
         )
     except sqlite3.IntegrityError:
@@ -130,10 +146,94 @@ def insert_inbound_thread(
             raise
         return raced["id"]
     logger.info(
-        "email_threads row id=%s (thread_id=%s) scenario=%s",
-        cur.lastrowid, thread_id, extraction.scenario,
+        "email_threads row id=%s (thread_id=%s) scenario=%s status=%s",
+        cur.lastrowid, thread_id, extraction.scenario, status,
     )
     return int(cur.lastrowid)
+
+
+# Order of the processing-trace stages shown in the UI. 'drafting' sits between
+# 'matched' and 'drafted': suppliers are known, per-supplier outreach in flight.
+PIPELINE_STAGES = ("received", "extracted", "matched", "drafting", "drafted")
+
+
+def set_pipeline_stage(
+    email_thread_id: int, stage: str, conn: sqlite3.Connection, *, commit: bool = True
+) -> None:
+    """Advance a still-processing enquiry to `stage` (keeps status='processing')."""
+    conn.execute(
+        "UPDATE email_threads SET status = 'processing', pipeline_stage = ?, "
+        "pipeline_updated_at = ? WHERE id = ?",
+        (stage, _now(), email_thread_id),
+    )
+    if commit:
+        conn.commit()
+
+
+def set_drafts_total(
+    email_thread_id: int, total: int, conn: sqlite3.Connection, *, commit: bool = True
+) -> None:
+    """Record how many matched suppliers this enquiry will draft to (set once)."""
+    conn.execute(
+        "UPDATE email_threads SET drafts_total = ? WHERE id = ?", (total, email_thread_id)
+    )
+    if commit:
+        conn.commit()
+
+
+def draft_progress(email_thread_id: int, conn: sqlite3.Connection) -> dict:
+    """{done, total} for per-supplier drafting. `done` = committed draft rows so
+    far; `total` = drafts_total if set, else `done` (so a finished enquiry reads
+    N/N)."""
+    done = conn.execute(
+        "SELECT COUNT(*) AS c FROM supplier_quote_requests WHERE email_thread_id = ?",
+        (email_thread_id,),
+    ).fetchone()["c"]
+    row = conn.execute(
+        "SELECT drafts_total FROM email_threads WHERE id = ?", (email_thread_id,)
+    ).fetchone()
+    total = row["drafts_total"] if row and row["drafts_total"] is not None else done
+    return {"done": done, "total": max(total, done)}
+
+
+def finalize_thread_status(
+    email_thread_id: int, status: str, conn: sqlite3.Connection, *, commit: bool = True
+) -> None:
+    """Land the enquiry on a terminal status ('drafted' or 'logged').
+
+    'drafted' also pins pipeline_stage to 'drafted'; 'logged' leaves the stage
+    it reached (typically 'extracted') so the trace still reads truthfully.
+    """
+    if status == "drafted":
+        conn.execute(
+            "UPDATE email_threads SET status = 'drafted', pipeline_stage = 'drafted', "
+            "pipeline_updated_at = ? WHERE id = ?",
+            (_now(), email_thread_id),
+        )
+    else:
+        conn.execute(
+            "UPDATE email_threads SET status = ?, pipeline_updated_at = ? WHERE id = ?",
+            (status, _now(), email_thread_id),
+        )
+    if commit:
+        conn.commit()
+
+
+def delete_incomplete_thread(email_thread_id: int, conn: sqlite3.Connection) -> None:
+    """Drop a half-processed inbound thread and any drafts it produced.
+
+    Called when a redelivery finds a prior row that never reached a terminal
+    status (the first attempt crashed mid-pipeline, e.g. an LLM timeout). Wiping
+    it lets the retry reprocess from a clean slate instead of the idempotency
+    gate falsely reporting the enquiry as finished.
+    """
+    conn.execute(
+        "DELETE FROM supplier_quote_requests WHERE email_thread_id = ?", (email_thread_id,)
+    )
+    conn.execute("DELETE FROM email_threads WHERE id = ?", (email_thread_id,))
+    conn.commit()
+    logger.info("deleted incomplete email_thread id=%s (and its draft rows) for reprocessing",
+                email_thread_id)
 
 
 # --------------------------------------------------------------------------- #
@@ -288,3 +388,55 @@ def enquiry_progress(email_thread_id: int, conn: sqlite3.Connection) -> dict:
     total = row["total"] or 0
     sent = row["sent"] or 0
     return {"sent": sent, "total": total}
+
+
+def build_thread_trace(thread_row, sent_progress: dict, draft_prog: dict | None = None) -> list[dict]:
+    """The processing trace for the detail pane (plans/v2SQ-quoteflow-ui.html).
+
+    5 nodes: received -> extracted -> suppliers matched -> drafts generated
+    (per-supplier, live) -> all sent. A node is `done` once the enquiry has
+    reached at least that stage; the drafting node also carries "N of M" while
+    it's in flight.
+    """
+    stage = (thread_row["pipeline_stage"] if "pipeline_stage" in thread_row.keys() else None)
+    status = (thread_row["status"] if "status" in thread_row.keys() else None)
+    reached = PIPELINE_STAGES.index(stage) if stage in PIPELINE_STAGES else -1
+    if status == "drafted":
+        reached = max(reached, PIPELINE_STAGES.index("drafted"))
+
+    draft_prog = draft_prog or {"done": 0, "total": 0}
+    d_done, d_total = draft_prog.get("done", 0), draft_prog.get("total", 0)
+    s_total = sent_progress.get("total", 0)
+    s_sent = sent_progress.get("sent", 0)
+
+    i_matched = PIPELINE_STAGES.index("matched")
+    i_drafting = PIPELINE_STAGES.index("drafting")
+    i_drafted = PIPELINE_STAGES.index("drafted")
+
+    trace = [
+        {"key": "received", "label": "Enquiry received", "done": reached >= 0,
+         "detail": (f"Received {thread_row['processed_at']}"
+                    if thread_row["processed_at"] else "Received") if reached >= 0 else None},
+        {"key": "extracted", "label": "Content extracted", "done": reached >= 1,
+         "detail": "Product, quantity and delivery window parsed" if reached >= 1 else None},
+        {"key": "matched", "label": "Suppliers matched", "done": reached >= i_matched,
+         "detail": (f"{d_total} supplier(s) cleared the match threshold"
+                    if d_total else "Matching suppliers") if reached >= i_matched else None},
+    ]
+
+    # The drafting node: pending -> in-progress ("2 of 3") -> done.
+    if reached >= i_drafted or (d_total and d_done >= d_total):
+        drafting = {"done": True, "detail": f"Outreach drafted for all {d_total or d_done} supplier(s)"}
+    elif reached >= i_drafting or (reached >= i_matched and d_done):
+        drafting = {"done": False, "detail": f"Drafting {d_done} of {d_total} — in progress"}
+    else:
+        drafting = {"done": False, "detail": None}
+    trace.append({"key": "generated", "label": "Supplier drafts generated", **drafting})
+
+    trace.append({
+        "key": "all_sent",
+        "label": "All supplier drafts sent",
+        "done": s_total > 0 and s_sent == s_total,
+        "detail": f"{s_sent} of {s_total} sent" if s_total else None,
+    })
+    return trace

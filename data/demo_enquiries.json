@@ -1,0 +1,208 @@
+{
+  "_comment": "Demo overlay for walkthroughs / meetings. Load with `python -m gmail_trigger_poc.seed --demo` (runs a normal seed first, then lays these on top). Six client enquiries frozen at different v2SQ lifecycle stages so the Desk shows New / Processing / Drafted / all-sent side by side. IDs live in a 9000+ block so they never collide with the main seed. Purge with: DELETE FROM supplier_quote_requests WHERE id >= 9000; DELETE FROM email_threads WHERE id >= 9000;",
+
+  "body_template": "Hi team,\n\nWe're sourcing {{product}} for a client and your listing came up as a strong match.\n\nQuantity requested: {{quantity}}\nReference unit price: {{unit_price}}\nRequested delivery: {{delivery}}\n\nCould you confirm current pricing, MOQ and lead time? This may become a recurring order if the terms work out.\n\nThanks,\nMeridian Trade Partners — Sourcing",
+
+  "enquiries": [
+    {
+      "id": 9001,
+      "gmail_message_id": "demo_northfield_001",
+      "from_email": "y.tanaka@tanakafoods.jp",
+      "subject": "Enquiry: Vacuum-sealed spice packets — 12,000 units",
+      "body_text": "Hi there,\n\nWe're after roughly 12,000 vacuum-sealed spice packets (mixed masala blend, ~200g each) for Northfield Foods Ltd. Delivery to Osaka within about 5 weeks. Could you send pricing, MOQ and typical lead time?\n\nThanks,\nYuki",
+      "processed_at": "2026-09-10 08:52:00",
+      "status": "new",
+      "pipeline_stage": "received",
+      "client_id": 10,
+      "extracted": null,
+      "supplier_drafts": []
+    },
+    {
+      "id": 9002,
+      "gmail_message_id": "demo_harborline_001",
+      "from_email": "lisa.b@nordicchemsolutions.se",
+      "subject": "Industrial-grade citric acid — 2 tonnes",
+      "body_text": "Hello,\n\nHarborline Chemicals needs 2 tonnes of industrial-grade citric acid (anhydrous). Shipped to Gothenburg, no hard deadline but within the quarter. Please advise price per kg and minimum order.\n\nRegards,\nLisa Bergström",
+      "processed_at": "2026-09-10 07:40:00",
+      "status": "new",
+      "pipeline_stage": "received",
+      "client_id": 8,
+      "extracted": null,
+      "supplier_drafts": []
+    },
+    {
+      "id": 9003,
+      "gmail_message_id": "demo_apex_001",
+      "from_email": "john@apex-mfg.com",
+      "subject": "Stainless steel bolts M10x50, quantity 5,000",
+      "body_text": "Hi,\n\nApex Manufacturing needs about 5,000 stainless steel bolts M10x50 (A2-70, DIN 933). Delivery to Ohio, FOB Shanghai is fine. Pricing and lead time please.\n\nJohn Meyer",
+      "processed_at": "2026-09-10 09:03:00",
+      "status": "processing",
+      "pipeline_stage": "extracted",
+      "client_id": 1,
+      "extracted": {
+        "scenario": "client_enquiry",
+        "product_name": "Stainless Steel Bolts M10x50",
+        "product_description": "Stainless steel bolts M10x50, A2-70, DIN 933",
+        "quantity": 5000,
+        "unit_of_measure": "pieces",
+        "delivery_terms": "FOB Shanghai",
+        "destination": "Ohio, USA",
+        "specifications": "Grade A2-70, DIN 933",
+        "client_name": "John Meyer",
+        "client_company": "Apex Manufacturing Ltd.",
+        "urgency": "normal"
+      },
+      "supplier_drafts": []
+    },
+    {
+      "id": 9004,
+      "gmail_message_id": "demo_ferro_001",
+      "from_email": "mobrien@obriensupplies.ie",
+      "subject": "CNC-machined gearbox housings, 400 units",
+      "body_text": "Hi,\n\nFerro Dynamics is sourcing 400 CNC-machined gearbox housings (cast iron, machined to drawing, tolerance ±0.05mm). Delivery to Cork within 6 weeks. Please quote unit price, MOQ and lead time.\n\nMichael O'Brien",
+      "processed_at": "2026-09-10 08:25:00",
+      "status": "processing",
+      "pipeline_stage": "matched",
+      "client_id": 9,
+      "extracted": {
+        "scenario": "client_enquiry",
+        "product_name": "CNC Machined Gear Housings",
+        "product_description": "CNC-machined gearbox housings, cast iron, machined to drawing",
+        "quantity": 400,
+        "unit_of_measure": "units",
+        "delivery_terms": "DAP Cork",
+        "destination": "Cork, Ireland",
+        "specifications": "Cast iron, tolerance ±0.05mm, machined to supplied drawing",
+        "client_name": "Michael O'Brien",
+        "client_company": "O'Brien Industrial Supplies",
+        "urgency": "normal"
+      },
+      "supplier_drafts": []
+    },
+    {
+      "id": 9005,
+      "gmail_message_id": "demo_meridian_001",
+      "from_email": "emma@lawsontextiles.com.au",
+      "subject": "Organic cotton canvas, 800m roll, recurring order",
+      "body_text": "Hi,\n\nLooking for 800m of organic cotton canvas, mid-weight, undyed. Need it landed in Rotterdam within four weeks. Recurring monthly order if the pricing works out.\n\nEmma Lawson",
+      "processed_at": "2026-09-10 06:10:00",
+      "status": "drafted",
+      "pipeline_stage": "drafted",
+      "client_id": 6,
+      "extracted": {
+        "scenario": "client_enquiry",
+        "product_name": "Cotton Twill Fabric (220gsm)",
+        "product_description": "Organic cotton canvas, mid-weight, undyed",
+        "quantity": 800,
+        "unit_of_measure": "m",
+        "delivery_terms": "FOB Rotterdam",
+        "destination": "Rotterdam, Netherlands",
+        "specifications": "Organic (GOTS preferred), mid-weight ~220gsm, undyed",
+        "client_name": "Emma Lawson",
+        "client_company": "Lawson Textiles Co.",
+        "urgency": "normal"
+      },
+      "supplier_drafts": [
+        {
+          "id": 9001,
+          "supplier_id": 6,
+          "product_id": 7,
+          "quantity": 800,
+          "match_score": 0.91,
+          "specs_summary": "organic cotton canvas, mid-weight, undyed; landed Rotterdam within 4 weeks",
+          "draft_to": "linh.nguyen@vta.vn",
+          "draft_subject": "RFQ — Organic cotton canvas, 800m",
+          "status": "sent",
+          "sent_at": "2026-09-10 06:35:00",
+          "fields": [
+            {"key": "product", "label": "Product", "value": "organic cotton canvas (mid-weight, undyed)", "tag": "AI-GENERATED"},
+            {"key": "quantity", "label": "Quantity requested", "value": "800 m", "tag": "AI-GENERATED"},
+            {"key": "unit_price", "label": "Reference unit price", "value": "$4.35 / m", "tag": "FROM-DATABASE"},
+            {"key": "delivery", "label": "Requested delivery", "value": "3 weeks, FOB Rotterdam", "tag": "MANUAL"}
+          ]
+        },
+        {
+          "id": 9002,
+          "supplier_id": 7,
+          "product_id": 7,
+          "quantity": 800,
+          "match_score": 0.84,
+          "specs_summary": "organic cotton canvas, mid-weight, undyed; landed Rotterdam within 4 weeks",
+          "draft_to": "rahman@dhakagarments.com.bd",
+          "draft_subject": "RFQ — Organic cotton canvas, 800m",
+          "status": "draft",
+          "sent_at": null,
+          "fields": [
+            {"key": "product", "label": "Product", "value": "organic cotton canvas (mid-weight, undyed)", "tag": "AI-GENERATED"},
+            {"key": "quantity", "label": "Quantity requested", "value": "800 m", "tag": "AI-GENERATED"},
+            {"key": "unit_price", "label": "Reference unit price", "value": "$4.60 / m", "tag": "FROM-DATABASE"},
+            {"key": "delivery", "label": "Requested delivery", "value": "GOTS certificate required", "tag": "NEEDS-REVIEW"}
+          ]
+        }
+      ]
+    },
+    {
+      "id": 9006,
+      "gmail_message_id": "demo_solaris_001",
+      "from_email": "priya.nair@nairelectronics.in",
+      "subject": "PCB connectors, 3-pin, 20,000 units",
+      "body_text": "Hi,\n\nNeed 20,000 PCB connectors, 3-pin. Shenzhen origin preferred. Two week turnaround. Send pricing, MOQ and lead time.\n\nPriya Nair",
+      "processed_at": "2026-09-09 15:20:00",
+      "status": "drafted",
+      "pipeline_stage": "drafted",
+      "client_id": 4,
+      "extracted": {
+        "scenario": "client_enquiry",
+        "product_name": "PCB Assembly Boards (Custom)",
+        "product_description": "PCB connectors, 3-pin, 20,000 units",
+        "quantity": 20000,
+        "unit_of_measure": "units",
+        "delivery_terms": "FOB Shenzhen",
+        "destination": "Bangalore, India",
+        "specifications": "3-pin PCB connector, Shenzhen origin preferred",
+        "client_name": "Priya Nair",
+        "client_company": "Nair Electronics Trading",
+        "urgency": "high"
+      },
+      "supplier_drafts": [
+        {
+          "id": 9003,
+          "supplier_id": 4,
+          "product_id": 5,
+          "quantity": 20000,
+          "match_score": 0.93,
+          "specs_summary": "3-pin PCB connectors, 20,000 units; Shenzhen origin; 2-week turnaround",
+          "draft_to": "amy.chen@sz-bright.com",
+          "draft_subject": "RFQ — PCB connectors, 3-pin, 20,000 units",
+          "status": "sent",
+          "sent_at": "2026-09-09 15:44:00",
+          "fields": [
+            {"key": "product", "label": "Product", "value": "3-pin PCB connectors", "tag": "AI-GENERATED"},
+            {"key": "quantity", "label": "Quantity requested", "value": "20,000 units", "tag": "AI-GENERATED"},
+            {"key": "unit_price", "label": "Reference unit price", "value": "$0.42 / unit", "tag": "FROM-DATABASE"},
+            {"key": "delivery", "label": "Requested delivery", "value": "2 weeks, FOB Shenzhen", "tag": "MANUAL"}
+          ]
+        },
+        {
+          "id": 9004,
+          "supplier_id": 5,
+          "product_id": 5,
+          "quantity": 20000,
+          "match_score": 0.78,
+          "specs_summary": "3-pin PCB connectors, 20,000 units; Shenzhen origin; 2-week turnaround",
+          "draft_to": "export@tpc-taiwan.com",
+          "draft_subject": "RFQ — PCB connectors, 3-pin, 20,000 units",
+          "status": "sent",
+          "sent_at": "2026-09-09 15:47:00",
+          "fields": [
+            {"key": "product", "label": "Product", "value": "3-pin PCB connectors", "tag": "AI-GENERATED"},
+            {"key": "quantity", "label": "Quantity requested", "value": "20,000 units", "tag": "AI-GENERATED"},
+            {"key": "unit_price", "label": "Reference unit price", "value": "$0.45 / unit", "tag": "FROM-DATABASE"},
+            {"key": "delivery", "label": "Requested delivery", "value": "2 weeks, FOB Shenzhen", "tag": "MANUAL"}
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -70,6 +70,13 @@ def test_supplier_drafts_roundtrip_and_send(client):
 
     got = client.get(f"/enquiry/{thread_id}/supplier-drafts").json()
     assert got["email_thread_id"] == thread_id
+    assert got["status"] == "drafted"
+    assert [n["key"] for n in got["trace"]] == [
+        "received", "extracted", "matched", "generated", "all_sent",
+    ]
+    assert all(n["done"] for n in got["trace"][:4])  # generated once drafted
+    assert got["trace"][4]["done"] is False  # nothing sent yet
+    assert got["draft_progress"] == {"done": len(ids), "total": len(ids)}
     assert {d["id"] for d in got["supplier_drafts"]} == set(ids)
     scores = [d["match_score"] for d in got["supplier_drafts"]]
     assert scores == sorted(scores, reverse=True)  # best match first
@@ -116,3 +123,5 @@ def test_enquiries_desk_list(client):
     assert body["count"] >= 1
     mine = next(e for e in body["enquiries"] if e["subject"] == ENQUIRY["subject"])
     assert mine["status"] == "drafted" and mine["drafts"] >= 1
+    assert mine["pipeline_stage"] == "drafted"
+    assert mine["all_sent"] is False

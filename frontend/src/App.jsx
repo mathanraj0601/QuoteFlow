@@ -1,8 +1,57 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api } from "./api.js";
+import { api, openProgressSocket } from "./api.js";
 import EnquiryDetail from "./EnquiryDetail.jsx";
 import Suppliers from "./Suppliers.jsx";
 import SimulateDialog from "./SimulateDialog.jsx";
+import Login from "./Login.jsx";
+
+const AUTH_KEY = "qf_user";
+const readUser = () => {
+  try {
+    return localStorage.getItem(AUTH_KEY);
+  } catch {
+    return null;
+  }
+};
+
+function initials(name) {
+  const s = (name || "").trim();
+  if (!s) return "QF";
+  if (s.includes("@")) return s.slice(0, 2).toUpperCase();
+  const parts = s.split(/\s+/);
+  return ((parts[0]?.[0] || "") + (parts[1]?.[0] || parts[0]?.[1] || "")).toUpperCase();
+}
+
+function AvatarMenu({ user, onSignOut }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="avatar-wrap">
+      <button className="avatar" onClick={() => setOpen((v) => !v)} title={user}>
+        {initials(user)}
+      </button>
+      {open && (
+        <>
+          <div className="avatar-scrim" onClick={() => setOpen(false)} />
+          <div className="avatar-menu">
+            <div className="avatar-menu-head">
+              <b>Signed in</b>
+              <span>{user}</span>
+            </div>
+            <button
+              className="avatar-menu-item"
+              onClick={() => {
+                setOpen(false);
+                onSignOut();
+              }}
+            >
+              Sign out
+            </button>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
 
 function useToast() {
   const [msg, setMsg] = useState(null);
@@ -15,19 +64,45 @@ function useToast() {
   return [msg, toast];
 }
 
-function HealthPill({ health }) {
+function HealthPill({ health, live }) {
   if (!health) return <span className="pill err">backend down</span>;
   const poller = health.poller_alive ? "live" : health.poller_enabled ? "starting" : "off";
   return (
-    <span className="pill ok">
-      poller {poller} · llm:{health.llm_provider} · emb:{health.embedding_provider}
+    <span className={"pill " + (live ? "ok" : "warn")}>
+      {live ? "● live" : "○ polling"} · poller {poller} · llm:{health.llm_provider}
     </span>
   );
 }
 
-function Desk({ selectedId, onSelect, toast, refreshKey }) {
+// One place that decides an enquiry's Desk bucket + badge, so the filter chips
+// and the card badge can never disagree. "sent" is computed (every draft sent),
+// never a stored status — matches the backend's `all_sent`.
+function deskBucket(e) {
+  if (e.status === "drafted" && e.drafts > 0 && e.sent === e.drafts) return "sent";
+  if (e.status === "new" || e.status === "processing" || e.status === "drafted")
+    return e.status;
+  return "logged";
+}
+
+const BADGE_TEXT = {
+  new: "new",
+  processing: "processing",
+  drafted: "drafted",
+  sent: "all sent",
+};
+
+const FILTERS = [
+  ["all", "All"],
+  ["new", "New"],
+  ["processing", "Processing"],
+  ["drafted", "Drafted"],
+  ["sent", "Fully sent"],
+];
+
+function Desk({ selectedId, onSelect, toast, refreshKey, live }) {
   const [enquiries, setEnquiries] = useState(null);
   const [includeAll, setIncludeAll] = useState(false);
+  const [filter, setFilter] = useState("all");
   const [err, setErr] = useState(null);
 
   const load = useCallback(async () => {
@@ -39,11 +114,24 @@ function Desk({ selectedId, onSelect, toast, refreshKey }) {
     }
   }, [includeAll]);
 
+  // WebSocket pushes drive the refresh; the interval is just a slow safety net.
   useEffect(() => {
     load();
-    const id = setInterval(load, 5000);
+    const id = setInterval(load, 15000);
     return () => clearInterval(id);
-  }, [load, refreshKey]);
+  }, [load, refreshKey, live]);
+
+  const counts = (enquiries || []).reduce(
+    (acc, e) => {
+      acc.all += 1;
+      acc[deskBucket(e)] += 1;
+      return acc;
+    },
+    { all: 0, new: 0, processing: 0, drafted: 0, sent: 0, logged: 0 },
+  );
+  const shown = (enquiries || []).filter(
+    (e) => filter === "all" || deskBucket(e) === filter,
+  );
 
   return (
     <div className="grid">
@@ -59,11 +147,25 @@ function Desk({ selectedId, onSelect, toast, refreshKey }) {
             show seed backfill
           </label>
         </div>
+        <div className="chips">
+          {FILTERS.map(([key, label]) => (
+            <button
+              key={key}
+              className={"chip" + (filter === key ? " active" : "")}
+              onClick={() => setFilter(key)}
+            >
+              {label} <b>{counts[key] ?? 0}</b>
+            </button>
+          ))}
+        </div>
         {err && <div className="empty">{err}</div>}
         {!err && enquiries?.length === 0 && <div className="empty">No enquiries yet.</div>}
+        {!err && enquiries?.length > 0 && shown.length === 0 && (
+          <div className="empty">Nothing in “{filter}”.</div>
+        )}
         {!err && !enquiries && <div className="empty">loading…</div>}
-        {enquiries?.map((e) => {
-          const allSent = e.status === "drafted" && e.drafts > 0 && e.sent === e.drafts;
+        {shown.map((e) => {
+          const bucket = deskBucket(e);
           return (
             <div
               key={e.email_thread_id}
@@ -72,18 +174,24 @@ function Desk({ selectedId, onSelect, toast, refreshKey }) {
             >
               <div className="row1">
                 <div className="subj">{e.subject || "(no subject)"}</div>
-                {e.status === "drafted" ? (
-                  <span className={"badge " + (allSent ? "sent" : "drafted")}>
-                    {allSent ? "all sent" : "drafted"}
-                  </span>
-                ) : (
-                  <span className="badge logged">{e.scenario || "logged"}</span>
-                )}
+                <span className={"badge " + bucket}>
+                  {bucket === "logged"
+                    ? e.scenario || "logged"
+                    : BADGE_TEXT[bucket]}
+                </span>
               </div>
               <div className="from">{e.from_email}</div>
               <div className="meta">
                 <span>#{e.email_thread_id}</span>
-                <span>{e.drafts} draft(s)</span>
+                {bucket === "new" || bucket === "processing" ? (
+                  <span className="live-stage">
+                    {e.pipeline_stage === "drafting" || e.pipeline_stage === "matched"
+                      ? `drafting ${e.drafts}/${e.drafts_total || "?"}`
+                      : e.pipeline_stage || "queued"}
+                  </span>
+                ) : (
+                  <span>{e.drafts} draft(s)</span>
+                )}
                 {e.drafts > 0 && <span>{e.sent}/{e.drafts} sent</span>}
               </div>
             </div>
@@ -95,6 +203,7 @@ function Desk({ selectedId, onSelect, toast, refreshKey }) {
         {selectedId ? (
           <EnquiryDetail
             threadId={selectedId}
+            live={live}
             onClose={() => onSelect(null)}
             onActivity={load}
             toast={toast}
@@ -108,6 +217,7 @@ function Desk({ selectedId, onSelect, toast, refreshKey }) {
 }
 
 export default function App() {
+  const [user, setUser] = useState(readUser);
   const [view, setView] = useState("desk");
   const [health, setHealth] = useState(undefined);
   const [selectedId, setSelectedId] = useState(null);
@@ -115,13 +225,58 @@ export default function App() {
   const [deskKey, setDeskKey] = useState(0);
   const refreshDesk = useCallback(() => setDeskKey((k) => k + 1), []);
   const [toastMsg, toast] = useToast();
+  // Bumped on every WebSocket progress event; used as a render/refresh trigger.
+  const [liveTick, setLiveTick] = useState(0);
+  const [wsConnected, setWsConnected] = useState(false);
+
+  const signIn = useCallback((email) => {
+    try {
+      localStorage.setItem(AUTH_KEY, email);
+    } catch {
+      /* private mode — session-only sign-in still works */
+    }
+    setUser(email);
+  }, []);
+
+  const signOut = useCallback(() => {
+    try {
+      localStorage.removeItem(AUTH_KEY);
+    } catch {
+      /* ignore */
+    }
+    setUser(null);
+    setSelectedId(null);
+    setView("desk");
+  }, []);
 
   useEffect(() => {
+    if (!user) return undefined;
     const load = () => api.health().then(setHealth).catch(() => setHealth(null));
     load();
-    const id = setInterval(load, 8000);
+    const id = setInterval(load, 15000);
     return () => clearInterval(id);
-  }, []);
+  }, [user]);
+
+  // One WebSocket for the whole app: each pipeline event bumps liveTick, which
+  // Desk + EnquiryDetail take as a refresh trigger. Falls back to polling if the
+  // socket can't connect.
+  useEffect(() => {
+    if (!user) return undefined;
+    const stop = openProgressSocket((msg) => {
+      if (msg.event === "_connected") setWsConnected(true);
+      else if (msg.event === "_disconnected") setWsConnected(false);
+      else {
+        setLiveTick((t) => t + 1);
+        if (msg.event === "draft" && msg.supplier)
+          toast(`draft ${msg.done}/${msg.total}: ${msg.supplier}`);
+        if (msg.event === "done" && msg.status === "drafted")
+          toast(`enquiry #${msg.email_thread_id}: ${msg.drafts} draft(s) ready`);
+      }
+    });
+    return stop;
+  }, [user, toast]);
+
+  if (!user) return <Login onSignIn={signIn} />;
 
   return (
     <>
@@ -140,10 +295,11 @@ export default function App() {
           </button>
         </nav>
         <div className="spacer" />
-        <HealthPill health={health} />
+        <HealthPill health={health} live={wsConnected} />
         <button className="hbtn" onClick={() => setSimOpen(true)}>
           Simulate email
         </button>
+        <AvatarMenu user={user} onSignOut={signOut} />
       </header>
 
       <main>
@@ -153,6 +309,7 @@ export default function App() {
             onSelect={setSelectedId}
             toast={toast}
             refreshKey={deskKey}
+            live={liveTick}
           />
         )}
         {view === "suppliers" && <Suppliers />}

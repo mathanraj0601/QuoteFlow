@@ -60,6 +60,8 @@
   .badge.drafted{background:var(--green-bg);color:#12694a}
   .badge.logged{background:var(--line);color:var(--ink-soft)}
   .badge.sent{background:var(--blue-bg);color:#2c46a0}
+  .badge.new{background:var(--blue-bg);color:#2c46a0}
+  .badge.processing{background:var(--amber-bg);color:#8a5e12}
 
   .empty{padding:60px 20px;text-align:center;color:var(--ink-faint)}
 
@@ -221,13 +223,18 @@ async function loadDesk() {
     const host = $("#deals");
     if (!enquiries.length) { host.innerHTML = `<div class="empty">No enquiries yet.</div>`; return; }
     host.innerHTML = enquiries.map(e => {
-      const b = e.status === "drafted"
-        ? (e.sent === e.drafts && e.drafts > 0 ? `<span class="badge sent">all sent</span>` : `<span class="badge drafted">drafted</span>`)
-        : `<span class="badge logged">${esc(e.scenario || "logged")}</span>`;
+      const bucket = e.all_sent ? "sent"
+        : (["new", "processing", "drafted"].includes(e.status) ? e.status : "logged");
+      const label = { new: "new", processing: "processing", drafted: "drafted", sent: "all sent" }[bucket]
+        || esc(e.scenario || "logged");
+      const b = `<span class="badge ${bucket}">${label}</span>`;
+      const progress = (bucket === "new" || bucket === "processing")
+        ? `<span>${esc(e.pipeline_stage || "queued")}</span>`
+        : `<span>${e.drafts} draft(s)</span>`;
       return `<div class="deal ${state.selected === e.email_thread_id ? "sel" : ""}" onclick="openEnquiry(${e.email_thread_id})">
         <div class="row1"><div class="subj">${esc(e.subject || "(no subject)")}</div>${b}</div>
         <div class="from">${esc(e.from_email)}</div>
-        <div class="meta"><span>#${e.email_thread_id}</span><span>${e.drafts} draft(s)</span>
+        <div class="meta"><span>#${e.email_thread_id}</span>${progress}
           ${e.drafts ? `<span>${e.sent}/${e.drafts} sent</span>` : ""}</div>
       </div>`;
     }).join("");

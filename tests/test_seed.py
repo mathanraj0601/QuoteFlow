@@ -38,3 +38,34 @@ def test_seed_is_rerunnable_without_duplicates(fresh_store):
         assert c.execute("SELECT COUNT(*) AS c FROM email_threads").fetchone()["c"] == 104
     finally:
         c.close()
+
+
+def test_load_demo_overlays_mixed_lifecycle_rows(fresh_store):
+    from gmail_trigger_poc import seed
+    from gmail_trigger_poc.db import connect
+
+    first = seed.load_demo(fresh_store)
+    seed.load_demo(fresh_store)  # re-runnable (INSERT OR IGNORE)
+
+    c = connect(fresh_store)
+    try:
+        statuses = dict(
+            c.execute(
+                "SELECT status, COUNT(*) FROM email_threads WHERE id >= 9000 GROUP BY status"
+            ).fetchall()
+        )
+        assert statuses == {"new": 2, "processing": 2, "drafted": 2}
+        assert first["email_threads"] == 6
+
+        # Solaris (#9006) — every supplier draft sent -> the Desk's "fully sent" bucket
+        drafts = c.execute(
+            "SELECT status FROM supplier_quote_requests WHERE email_thread_id = 9006"
+        ).fetchall()
+        assert [d["status"] for d in drafts] == ["sent", "sent"]
+
+        body = c.execute(
+            "SELECT draft_body FROM supplier_quote_requests WHERE id = 9001"
+        ).fetchone()["draft_body"]
+        assert "{{" not in body and "800 m" in body  # template rendered on load
+    finally:
+        c.close()

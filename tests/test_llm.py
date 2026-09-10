@@ -1,11 +1,16 @@
+import dataclasses
+import json
 import re
 
+import httpx
 import pytest
 
 from gmail_trigger_poc.config import get_settings
 from gmail_trigger_poc.llm import (
     VALID_TAGS,
     Extraction,
+    LLMError,
+    OllamaProvider,
     StubProvider,
     get_provider,
     render_body,
@@ -94,3 +99,110 @@ def test_stub_draft_shape_and_body_consistency():
 def test_get_provider_stub_selected(seeded_settings):
     # conftest pins LLM_PROVIDER=stub
     assert isinstance(get_provider(seeded_settings), StubProvider)
+
+
+# --------------------------------------------------------------------------- #
+# Ollama provider — HTTP mocked, no server required
+# --------------------------------------------------------------------------- #
+
+
+def _ollama_settings():
+    return dataclasses.replace(get_settings(), llm_provider="ollama", ollama_model="test-model")
+
+
+def _fake_post(content_obj, *, status_code=200):
+    """Return a stand-in for httpx.post that yields one Ollama /api/chat reply."""
+    captured = {}
+
+    def post(url, json=None, timeout=None):  # noqa: A002 - mirror httpx signature
+        captured["url"] = url
+        captured["payload"] = json
+        body = {"message": {"role": "assistant", "content": json_dumps(content_obj)}}
+        return httpx.Response(status_code, json=body, request=httpx.Request("POST", url))
+
+    post.captured = captured
+    return post
+
+
+def json_dumps(obj):
+    return obj if isinstance(obj, str) else json.dumps(obj)
+
+
+def test_ollama_classify_parses_json(monkeypatch):
+    reply = {
+        "scenario": "client_enquiry",
+        "product_description": "Industrial Grade Citric Acid",
+        "quantity": 8000,
+        "unit_of_measure": "kg",
+        "delivery_terms": "CIF Stockholm",
+        "urgency": "high",
+        "confidence": 0.82,
+    }
+    post = _fake_post(reply)
+    monkeypatch.setattr(httpx, "post", post)
+
+    ex = OllamaProvider(_ollama_settings()).classify_and_extract(FORMAL_ENQUIRY)
+
+    assert ex.scenario == "client_enquiry"
+    assert ex.quantity == 8000
+    assert ex.unit_of_measure == "kg"
+    assert ex.urgency == "high"
+    assert post.captured["url"].endswith("/api/chat")
+    assert post.captured["payload"]["model"] == "test-model"
+    assert post.captured["payload"]["format"] == "json"
+    assert post.captured["payload"]["stream"] is False
+
+
+def test_ollama_draft_shape_and_body_consistency(monkeypatch):
+    reply = {
+        # model dropped tokens into the subject — must come out fully rendered
+        "subject": "Quote Request for {{product_name}} - {{client_company}} ({{quantity}})",
+        "body_template": (
+            "Hi {{supplier_name}} team,\n\nQuantity: {{quantity}}\nPrice ref: {{price_ref}}\n\n"
+            "Regards,\n{{broker_name}}"
+        ),
+        "fields": [
+            {"key": "quantity", "label": "Qty", "value": "8,000 kg", "tag": "AI-GENERATED",
+             "confidence": 0.9},
+            {"key": "price_ref", "label": "Ref price", "value": "$1.20 / kg",
+             "tag": "FROM-DATABASE", "confidence": None},
+        ],
+    }
+    monkeypatch.setattr(httpx, "post", _fake_post(reply))
+
+    enquiry = Extraction(scenario="client_enquiry", product_description="Citric Acid",
+                         quantity=8000, client_company="Nordic Chem")
+    candidate = {"supplier_name": "Anhui Chem", "supplier_email": "z@anhuichem.cn",
+                 "product_name": "Industrial Grade Citric Acid", "unit_price": 1.2}
+    draft = OllamaProvider(_ollama_settings()).draft_supplier_outreach(
+        enquiry, candidate, get_settings()
+    )
+
+    assert set(draft) == {"to", "subject", "body_template", "fields", "body"}
+    assert "{{" not in draft["subject"]  # subject is rendered, not a raw template
+    assert draft["subject"] == "Quote Request for Industrial Grade Citric Acid - Nordic Chem (8,000 kg)"
+    assert draft["to"] == "z@anhuichem.cn"
+    assert draft["body"] == render_body(draft["body_template"], draft["fields"])
+    assert "{{supplier_name}}" not in draft["body_template"]  # fixed token substituted
+    assert "Anhui Chem" in draft["body"]
+    for f in draft["fields"]:
+        assert f["tag"] in VALID_TAGS
+
+
+def test_ollama_missing_model_raises(monkeypatch):
+    monkeypatch.setattr(httpx, "post", _fake_post({}, status_code=404))
+    with pytest.raises(LLMError, match="ollama pull"):
+        OllamaProvider(_ollama_settings()).classify_and_extract(FORMAL_ENQUIRY)
+
+
+def test_ollama_connection_error_raises(monkeypatch):
+    def boom(*a, **k):
+        raise httpx.ConnectError("connection refused")
+
+    monkeypatch.setattr(httpx, "post", boom)
+    with pytest.raises(LLMError, match="ollama serve"):
+        OllamaProvider(_ollama_settings()).classify_and_extract(FORMAL_ENQUIRY)
+
+
+def test_get_provider_ollama_selected():
+    assert isinstance(get_provider(_ollama_settings()), OllamaProvider)

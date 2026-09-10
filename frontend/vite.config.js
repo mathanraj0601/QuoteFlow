@@ -17,8 +17,11 @@ export default defineConfig({
   build: { outDir: "dist", emptyOutDir: true },
   server: {
     port: 5173,
-    proxy: Object.fromEntries(
-      API_PATHS.map((p) => [p, { target: "http://127.0.0.1:8000", changeOrigin: true }]),
-    ),
+    proxy: {
+      ...Object.fromEntries(
+        API_PATHS.map((p) => [p, { target: "http://127.0.0.1:8000", changeOrigin: true }]),
+      ),
+      "/ws": { target: "ws://127.0.0.1:8000", ws: true },
+    },
   },
 });

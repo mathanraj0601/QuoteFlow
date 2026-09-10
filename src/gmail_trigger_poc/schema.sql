@@ -138,7 +138,29 @@ CREATE TABLE IF NOT EXISTS email_threads (
     embedding_status        TEXT DEFAULT 'pending'      -- body_text vector lives in Chroma collection
                               CHECK (embedding_status IN ('pending','embedded','failed')),  -- "email_threads", id = email_threads.id
     processed_at            TIMESTAMP,
-    linked_quotation_id     INTEGER REFERENCES quotations(id)
+    linked_quotation_id     INTEGER REFERENCES quotations(id),
+
+    -- [gmail-trigger-poc] v2SQ enquiry lifecycle — mirrors the prototype UI's
+    -- Desk badges + processing trace (plans/v2SQ-quoteflow-ui.html). Only ever
+    -- set on inbound client-enquiry rows; NULL on seed-backfill / outbound rows.
+    --   new        -- row exists, live pipeline hasn't finished a stage yet
+    --   processing -- pipeline is mid-flight (see pipeline_stage for how far)
+    --   drafted    -- supplier_quote_requests rows created (0 or more)
+    --   logged     -- classified as not a client enquiry; nothing drafted
+    status                  TEXT
+                              CHECK (status IS NULL OR status IN ('new','processing','drafted','logged')),
+    -- Coarse progress inside 'processing', shown as the trace in the UI:
+    --   received -> extracted -> matched -> drafting -> drafted
+    -- 'drafting' = suppliers matched, per-supplier outreach in progress
+    -- (drafts_done / drafts_total track how far).
+    pipeline_stage          TEXT
+                              CHECK (pipeline_stage IS NULL OR
+                                     pipeline_stage IN ('received','extracted','matched','drafting','drafted')),
+    pipeline_updated_at     TIMESTAMP,
+    -- How many matched suppliers this enquiry will draft to (set once at match
+    -- time); drafts_done is COUNT(supplier_quote_requests) as they commit one by
+    -- one, so the UI can show "Drafting 2 of 3 ...".
+    drafts_total            INTEGER
 );
 
 -- ----------------------------------------------------------------------------
@@ -215,6 +237,7 @@ CREATE TABLE IF NOT EXISTS chat_messages (
 
 CREATE INDEX IF NOT EXISTS idx_email_threads_thread_id       ON email_threads(thread_id);
 CREATE INDEX IF NOT EXISTS idx_email_threads_gmail_thread    ON email_threads(gmail_thread_id);
+CREATE INDEX IF NOT EXISTS idx_email_threads_status          ON email_threads(status);
 CREATE INDEX IF NOT EXISTS idx_email_threads_quotation       ON email_threads(linked_quotation_id);
 CREATE INDEX IF NOT EXISTS idx_email_threads_embed_status    ON email_threads(embedding_status);
 CREATE INDEX IF NOT EXISTS idx_products_embed_status         ON products(embedding_status);

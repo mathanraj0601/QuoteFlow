@@ -96,7 +96,16 @@ uv run python -m gmail_trigger_poc.seed   # build quoteflow.db + chroma_data/ fr
 uv run gmail-trigger-poc             # or: uv run uvicorn gmail_trigger_poc.app:app --reload
 ```
 
-`seed` is a one-time backfill (re-run any time; `--keep` to load without resetting).
+`seed` is a one-time backfill (re-run any time; `--keep` to load without
+resetting; `--demo` also overlays `data/demo_enquiries.json` — six enquiries
+frozen at different lifecycle stages, IDs `9000+`, for walkthroughs).
+
+**Enquiry lifecycle** (`email_threads.status` / `pipeline_stage`, surfaced on the
+Desk as badges + a processing trace): `new` → `processing`
+(`received`→`extracted`→`matched`) → `drafted`, or `logged` for a non-enquiry.
+The live pipeline writes these progressively, so a slow multi-supplier draft
+shows a real "Processing" badge. "Fully sent" is computed (`all_sent`: every
+`supplier_quote_requests` row sent), never a stored status.
 The Gmail poller also needs `credentials.json` (Google Cloud OAuth client, Desktop
 app) in this folder — first run opens a browser once for consent, then caches
 `token.json`. Set `ENABLE_POLLER=false` to run the API alone.
@@ -145,6 +154,22 @@ export ANTHROPIC_API_KEY=sk-ant-...          # real Claude for classify/extract/
 export EMBEDDING_PROVIDER=chroma_default      # real MiniLM product embeddings
 uv run python -m gmail_trigger_poc.seed       # re-embed under the new provider
 ```
+
+### Local LLM via Ollama
+
+For a real model with no key and no network, point the pipeline at a local
+[Ollama](https://ollama.com) server:
+
+```bash
+ollama pull llama3.1:8b                       # one-time download (~4.7 GB)
+export LLM_PROVIDER=ollama                    # OLLAMA_MODEL defaults to llama3.1:8b
+uv run uvicorn gmail_trigger_poc.app:app
+```
+
+Same prompts as the Claude path; the model is constrained to JSON via Ollama's
+`format: "json"`. `OLLAMA_HOST` (default `http://localhost:11434`) and
+`OLLAMA_MODEL` are the knobs. Embeddings are independent — `EMBEDDING_PROVIDER`
+still selects MiniLM / hash.
 
 ## Tests
 

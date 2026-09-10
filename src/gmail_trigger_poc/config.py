@@ -7,13 +7,23 @@ without any .env present. Only the OAuth flow actually needs real files.
 from __future__ import annotations
 
 import os
+import sys
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from dotenv import load_dotenv
 
-# Load .env from the current working directory if present. Real environment
-# variables always win over .env values.
-load_dotenv()
+# Load .env from the project root (two levels up from this file:
+# src/gmail_trigger_poc/config.py -> repo root) so it works no matter which
+# directory the process was launched from. Fall back to a CWD-upwards search.
+# Real environment variables always win over .env values.
+#
+# Skip it entirely under pytest: tests must be hermetic from a developer's local
+# .env (e.g. a demo MATCH_SCORE_THRESHOLD would break threshold-sensitive tests).
+_UNDER_PYTEST = "pytest" in sys.modules or "PYTEST_CURRENT_TEST" in os.environ
+if not _UNDER_PYTEST:
+    _ROOT_ENV = Path(__file__).resolve().parents[2] / ".env"
+    load_dotenv(_ROOT_ENV if _ROOT_ENV.is_file() else None)
 
 
 def _bool(name: str, default: bool) -> bool:
@@ -102,6 +112,11 @@ class Settings:
     seed_file: str = field(
         default_factory=lambda: os.getenv("QUOTEFLOW_SEED_FILE", "data/quoteflow_seed.json")
     )
+    # Optional demo overlay: a handful of enquiries frozen at different lifecycle
+    # stages (new / processing / drafted), loaded by `seed --demo` for walkthroughs.
+    demo_file: str = field(
+        default_factory=lambda: os.getenv("QUOTEFLOW_DEMO_FILE", "data/demo_enquiries.json")
+    )
     # ChromaDB PersistentClient directory; collection "products" holds product vectors.
     chroma_path: str = field(default_factory=lambda: os.getenv("CHROMA_PATH", "chroma_data"))
     # Embedding function: auto (Chroma's ONNX MiniLM, fall back to hash on failure)
@@ -109,13 +124,25 @@ class Settings:
     embedding_provider: str = field(
         default_factory=lambda: os.getenv("EMBEDDING_PROVIDER", "auto").strip().lower()
     )
-    # LLM provider: auto (Claude if a key/profile resolves, else stub) | anthropic | stub.
+    # LLM provider: auto (Claude if a key/profile resolves, else stub)
+    # | anthropic | ollama (local, via OLLAMA_HOST) | stub.
     llm_provider: str = field(
         default_factory=lambda: os.getenv("LLM_PROVIDER", "auto").strip().lower()
     )
     llm_model: str = field(default_factory=lambda: os.getenv("LLM_MODEL", "claude-opus-5"))
     # Roomy: Opus 5 adaptive thinking tokens count against this alongside the JSON.
     llm_max_tokens: int = field(default_factory=lambda: _int("LLM_MAX_TOKENS", 8000))
+    # Local Ollama server (LLM_PROVIDER=ollama). Model must be pulled first:
+    #   ollama pull llama3.1:8b
+    ollama_host: str = field(
+        default_factory=lambda: os.getenv("OLLAMA_HOST", "http://localhost:11434").rstrip("/")
+    )
+    ollama_model: str = field(
+        default_factory=lambda: os.getenv("OLLAMA_MODEL", "llama3.1:8b")
+    )
+    # Seconds to wait on a single Ollama generation (CPU-only local models are slow;
+    # a cold model load plus a long draft prompt can take a few minutes on a 1-3B).
+    ollama_timeout: float = field(default_factory=lambda: _float("OLLAMA_TIMEOUT", 300.0))
     # Suppliers scoring at/above this against the enquiry each get a draft (v2SQ).
     # Plans state 0.65; we default to 0.50 because (a) MiniLM cosine similarity on
     # short enquiry text lands lower than the plans assumed, (b) the seed catalog
@@ -127,6 +154,13 @@ class Settings:
     )
     # How many product candidates to pull from the vector store before the SQL join.
     match_top_n: int = field(default_factory=lambda: _int("MATCH_TOP_N", 10))
+    # Artificial pause (seconds) after each pipeline stage so the Desk's live
+    # "Processing" badge / trace is watchable in a demo. 0 = no delay (default).
+    pipeline_step_delay_seconds: float = field(
+        default_factory=lambda: _float("PIPELINE_STEP_DELAY_SECONDS", 0.0)
+    )
+    # Log the full prompt sent to the LLM and its raw response ([LLM] tag, INFO).
+    llm_log_io: bool = field(default_factory=lambda: _bool("LLM_LOG_IO", True))
     # Broker identity used in drafted supplier outreach (matches the seed generator).
     broker_name: str = field(
         default_factory=lambda: os.getenv("BROKER_NAME", "Meridian Trade Partners")

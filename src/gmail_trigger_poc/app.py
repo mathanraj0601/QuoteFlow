@@ -6,6 +6,7 @@ Run:  uvicorn gmail_trigger_poc.app:app --reload
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -14,11 +15,11 @@ import time
 from contextlib import asynccontextmanager, contextmanager
 from pathlib import Path
 
-from fastapi import Body, FastAPI, HTTPException, Request
+from fastapi import Body, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from gmail_trigger_poc import repository
+from gmail_trigger_poc import progress, repository
 from gmail_trigger_poc.config import get_settings
 from gmail_trigger_poc.db import connect
 from gmail_trigger_poc.logging_setup import configure_logging, preview
@@ -41,6 +42,10 @@ async def lifespan(app: FastAPI):
         settings.log_level, settings.poll_interval_seconds, settings.enable_poller,
     )
 
+    # Live progress: let the pipeline (running on the poller thread) push events
+    # to the WebSocket clients that live on this event loop.
+    progress.bind_loop(asyncio.get_running_loop())
+
     if settings.enable_poller:
         _stop_event.clear()
         _poller_thread = threading.Thread(
@@ -59,9 +64,27 @@ async def lifespan(app: FastAPI):
     finally:
         logger.info("shutdown — signalling poller to stop")
         _stop_event.set()
+        progress.unbind_loop()
 
 
 app = FastAPI(title="gmail-trigger-poc", lifespan=lifespan)
+
+
+@app.websocket("/ws")
+async def progress_ws(ws: WebSocket) -> None:
+    """Live pipeline progress. The server pushes `{event, ...}` messages; the
+    client sends nothing (we only read to notice a disconnect)."""
+    await ws.accept()
+    progress.add_client(ws)
+    logger.info("ws client connected (%d total)", progress.client_count())
+    try:
+        while True:
+            await ws.receive_text()
+    except WebSocketDisconnect:
+        pass
+    finally:
+        progress.remove_client(ws)
+        logger.info("ws client disconnected (%d left)", progress.client_count())
 
 # Dashboard: the built React app (frontend/dist) if present, else the no-build
 # fallback in web/. Both are the same "Supplier Outreach Desk" over the API.
@@ -124,7 +147,7 @@ def health() -> dict:
         "has_db": has_db,
         "has_chroma": has_chroma,
         "llm_provider": s.llm_provider,
-        "llm_model": s.llm_model,
+        "llm_model": s.ollama_model if s.llm_provider == "ollama" else s.llm_model,
         "embedding_provider": s.embedding_provider,
         "match_score_threshold": s.match_score_threshold,
         "log_level": s.log_level,
@@ -146,13 +169,13 @@ def process_email_endpoint(gmail_message: dict) -> dict:
     return result  # noqa: RET504 - explicit for the log line above
 
 
-def _thread_row(thread_id: int, conn) -> dict:
+def _thread_row(thread_id: int, conn):
     row = conn.execute(
         "SELECT * FROM email_threads WHERE id = ?", (thread_id,)
     ).fetchone()
     if row is None:
         raise HTTPException(status_code=404, detail=f"no email thread {thread_id}")
-    return dict(row)
+    return row
 
 
 @app.get("/enquiries")
@@ -167,7 +190,8 @@ def list_enquiries(include_all: bool = False) -> dict:
         rows = conn.execute(
             """
             SELECT et.id, et.subject, et.from_email, et.processed_at,
-                   et.extracted_data_json,
+                   et.extracted_data_json, et.status AS thread_status, et.pipeline_stage,
+                   et.drafts_total,
                    COUNT(sqr.id)                                        AS drafts,
                    SUM(CASE WHEN sqr.status='sent' THEN 1 ELSE 0 END)   AS sent
             FROM email_threads et
@@ -184,9 +208,20 @@ def list_enquiries(include_all: bool = False) -> dict:
         except (json.JSONDecodeError, TypeError):
             scenario = None
         drafts = r["drafts"] or 0
-        if not include_all and scenario is None and drafts == 0:
-            continue  # seed backfill row, not something the live pipeline touched
+        thread_status = r["thread_status"]
+        # Seed-backfill rows carry no lifecycle status and never got a draft — hide
+        # them unless asked. Live rows (any status, or ≥1 draft) always show.
+        if (
+            not include_all
+            and drafts == 0
+            and scenario is None
+            and thread_status in (None, "logged")
+        ):
+            continue
         sent = r["sent"] or 0
+        # Prefer the stored lifecycle status; fall back for pre-migration rows.
+        status = thread_status or ("drafted" if drafts else "logged")
+        drafts_total = r["drafts_total"] if "drafts_total" in r.keys() and r["drafts_total"] is not None else drafts
         enquiries.append({
             "email_thread_id": r["id"],
             "subject": r["subject"],
@@ -194,8 +229,11 @@ def list_enquiries(include_all: bool = False) -> dict:
             "processed_at": r["processed_at"],
             "scenario": scenario,
             "drafts": drafts,
+            "drafts_total": max(drafts_total, drafts),
             "sent": sent,
-            "status": "drafted" if drafts else "logged",
+            "status": status,
+            "pipeline_stage": r["pipeline_stage"],
+            "all_sent": drafts > 0 and sent == drafts,
             "progress": f"{sent}/{drafts}" if drafts else "-",
         })
     return {"count": len(enquiries), "enquiries": enquiries}
@@ -205,12 +243,19 @@ def list_enquiries(include_all: bool = False) -> dict:
 def enquiry_supplier_drafts(thread_id: int) -> dict:
     """Everything the Supplier Outreach Builder needs for one enquiry (Plan B §6)."""
     with _db() as conn:
-        thread = _thread_row(thread_id, conn)
+        thread_row = _thread_row(thread_id, conn)
+        thread = dict(thread_row)
         drafts = repository.list_supplier_drafts(thread_id, conn)
-        progress = repository.enquiry_progress(thread_id, conn)
+        sent_progress = repository.enquiry_progress(thread_id, conn)
+        draft_prog = repository.draft_progress(thread_id, conn)
+        trace = repository.build_thread_trace(thread_row, sent_progress, draft_prog)
     return {
         "email_thread_id": thread_id,
-        "progress": progress,
+        "status": thread.get("status") or ("drafted" if drafts else "logged"),
+        "pipeline_stage": thread.get("pipeline_stage"),
+        "trace": trace,
+        "progress": sent_progress,
+        "draft_progress": draft_prog,
         "original_email": {
             "from": thread["from_email"],
             "subject": thread["subject"],
@@ -247,6 +292,7 @@ def update_supplier_draft(sqr_id: int, patch: dict = Body(default_factory=dict))
         updated = repository.apply_draft_edits(sqr_id, edits, conn)
     if updated is None:
         raise HTTPException(status_code=404, detail=f"no supplier draft {sqr_id}")
+    progress.emit("draft_updated", email_thread_id=updated["email_thread_id"], sqr_id=sqr_id)
     return updated
 
 
@@ -283,9 +329,11 @@ def send_supplier_draft(sqr_id: int, payload: dict = Body(default_factory=dict))
             "(scopes=%s)", sqr_id, s.scopes,
         )
         updated = repository.mark_draft_sent(sqr_id, conn)
-        progress = repository.enquiry_progress(updated["email_thread_id"], conn)
+        sent_progress = repository.enquiry_progress(updated["email_thread_id"], conn)
+    progress.emit("draft_sent", email_thread_id=updated["email_thread_id"], sqr_id=sqr_id,
+                  sent=sent_progress["sent"], total=sent_progress["total"])
     return {"status": "sent", "transmitted": False, "supplier_draft": updated,
-            "progress": progress}
+            "progress": sent_progress}
 
 
 @app.get("/suppliers")
