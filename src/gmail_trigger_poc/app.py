@@ -334,6 +334,11 @@ def send_enquiry(thread_id: int, payload: dict = Body(default_factory=dict)) -> 
         if repository.get_enquiry_draft(thread_id, conn) is None:
             raise HTTPException(status_code=409, detail="no shared draft to send for this enquiry")
         result = repository.send_enquiry_to_suppliers(thread_id, ids, conn)
+    if not result["newly_sent"]:
+        raise HTTPException(
+            status_code=409,
+            detail="none of the given supplier_ids are unsent matched suppliers for this enquiry",
+        )
     logger.info(
         "SEND (mark-only) enquiry #%s -> suppliers %s  (%d/%d sent)  scopes=%s",
         thread_id, result["newly_sent"], result["sent"], result["total"], s.scopes,

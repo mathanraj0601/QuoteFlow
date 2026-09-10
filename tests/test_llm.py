@@ -102,6 +102,101 @@ def test_get_provider_stub_selected(seeded_settings):
 
 
 # --------------------------------------------------------------------------- #
+# Shared outreach draft — one template for every matched supplier
+# --------------------------------------------------------------------------- #
+
+_SHARED_ORDER = ["quantity", "specifications", "delivery", "lead_time"]
+_SHARED_KEYS = set(_SHARED_ORDER)
+
+
+def test_stub_shared_draft_is_canonical_and_priceless():
+    enquiry = Extraction(
+        scenario="client_enquiry", product_description="Nitrile Gloves",
+        quantity=200000, unit_of_measure="unit", delivery_terms="CIF Felixstowe",
+        destination="Birmingham, UK", specifications="4 mil, blue, AQL 1.5",
+    )
+    draft = StubProvider().draft_shared_outreach(enquiry, {}, get_settings())
+
+    assert set(draft) == {"to", "subject", "body_template", "fields", "body"}
+    assert draft["to"] == "{{supplier_name}}"                     # per-recipient placeholder
+    assert "{{supplier_name}}" in draft["body_template"]          # stays live
+    assert [f["key"] for f in draft["fields"]] == _SHARED_ORDER
+    assert draft["body"] == render_body(draft["body_template"], draft["fields"])
+    for f in draft["fields"]:
+        assert f["tag"] in VALID_TAGS
+        assert "{{" not in f["value"]
+        assert "price" not in f["key"].lower()
+    assert "price" not in draft["body_template"].lower() or "pricing" in draft["body_template"].lower()
+
+
+def test_stub_shared_draft_marks_missing_values_needs_review():
+    """quantity / specs / delivery we can't fill are EMPTY + NEEDS-REVIEW (the UI
+    then prompts the operator); lead_time is always pre-filled so it never blocks."""
+    thin = Extraction(scenario="client_enquiry", product_description="Widgets")
+    fields = {f["key"]: f for f in StubProvider().draft_shared_outreach(thin, {}, get_settings())["fields"]}
+
+    for key in ("quantity", "specifications", "delivery"):
+        assert fields[key]["value"] == ""
+        assert fields[key]["tag"] == "NEEDS-REVIEW"
+    assert fields["lead_time"]["value"].strip()          # non-empty -> not a blocker
+
+
+def test_ollama_shared_draft_discards_model_fields_and_tokens(monkeypatch):
+    """A weak local model echoes template tokens back as field values and exposes
+    system tokens as editable rows. None of that must reach the stored draft."""
+    reply = {
+        "subject": "RFQ - {{product_name}}",
+        "body_template": (
+            "Hi {{supplier_name}} team,\n\n"
+            "- Quantity: {{quantity}}\n- Specs: {{specifications}}\n"
+            "- Deliver to: {{destination}}\n- Urgency: {{urgency}}\n"
+            "- Ref price: {{price_ref}}\n\nRegards,\n{{broker_name}}\n{{broker_email}}"
+        ),
+        "fields": [
+            {"key": "product_name", "label": "Product Name", "value": "{{product_name}}",
+             "tag": "AI-GENERATED", "confidence": None},
+            {"key": "supplier_name", "label": "Supplier Name", "value": "{{supplier_name}}",
+             "tag": "FROM-DATABASE", "confidence": None},
+            {"key": "broker_name", "label": "Broker Name", "value": "{{broker_name}}",
+             "tag": "FROM-DATABASE", "confidence": None},
+            {"key": "quantity", "label": "Quantity", "value": "", "tag": "AI-GENERATED",
+             "confidence": None},
+            {"key": "price_ref", "label": "Ref price", "value": "$1.20 / unit",
+             "tag": "FROM-DATABASE", "confidence": None},
+        ],
+    }
+    monkeypatch.setattr(httpx, "post", _fake_post(reply))
+    enquiry = Extraction(
+        scenario="client_enquiry", product_description="Citric Acid", quantity=8000,
+        unit_of_measure="kg", specifications="99.5%", delivery_terms="FOB Rotterdam",
+        destination="Hamburg", client_company="Nordic Chem",
+    )
+    draft = OllamaProvider(_ollama_settings()).draft_shared_outreach(
+        enquiry, {}, get_settings()
+    )
+
+    keys = [f["key"] for f in draft["fields"]]
+    # system tokens are NEVER editable fields
+    assert "supplier_name" not in keys and "broker_name" not in keys and "product_name" not in keys
+    # no price anywhere
+    assert not any("price" in k.lower() for k in keys)
+    assert "price_ref" not in draft["body_template"]  # substituted away (empty) — not a bare token
+    # the canonical four are always present, valued from the extraction
+    assert _SHARED_KEYS <= set(keys)
+    qty = next(f for f in draft["fields"] if f["key"] == "quantity")
+    assert qty["value"] == "8,000 kg"
+    # {{destination}} was fillable from the extraction; {{urgency}} (normal) was not
+    assert "Hamburg" in draft["body_template"]
+    # NOTHING is left as a raw token in a field value
+    for f in draft["fields"]:
+        assert "{{" not in f["value"]
+    # per-recipient placeholder stays; system tokens resolved
+    assert "{{supplier_name}}" in draft["body_template"]
+    assert "{{broker_name}}" not in draft["body_template"]
+    assert draft["body"] == render_body(draft["body_template"], draft["fields"])
+
+
+# --------------------------------------------------------------------------- #
 # Ollama provider — HTTP mocked, no server required
 # --------------------------------------------------------------------------- #
 

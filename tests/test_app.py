@@ -150,6 +150,78 @@ def test_send_endpoint_unknown_enquiry_404(client):
     assert client.patch("/enquiry/999999/draft", json={"draft_subject": "x"}).status_code == 404
 
 
+def test_send_enquiry_conflict_when_nothing_new_to_send(client):
+    drafted = client.post("/process-email", json=ENQUIRY).json()
+    tid = drafted["email_thread_id"]
+    ms = client.get(f"/enquiry/{tid}/supplier-drafts").json()["matched_suppliers"]
+    first = ms[0]["supplier_id"]
+
+    assert client.post(f"/enquiry/{tid}/send", json={"supplier_ids": [first]}).status_code == 200
+    # same supplier again -> already sent -> 409, not a silent no-op
+    assert client.post(f"/enquiry/{tid}/send", json={"supplier_ids": [first]}).status_code == 409
+    # a supplier id that isn't part of this enquiry -> 409
+    assert client.post(f"/enquiry/{tid}/send", json={"supplier_ids": [987654]}).status_code == 409
+    # malformed payloads -> 400
+    assert client.post(f"/enquiry/{tid}/send", json={"supplier_ids": []}).status_code == 400
+    assert client.post(f"/enquiry/{tid}/send", json={"supplier_ids": "x"}).status_code == 400
+    assert client.post(f"/enquiry/{tid}/send", json={}).status_code == 400
+
+
+def test_logged_thread_detail_and_desk_shape(client):
+    r = client.post("/process-email", json={
+        "id": "api-ooo-2", "thread_id": "y", "from": "bot@corp.com",
+        "to": "procurement@meridiantrade.com",
+        "subject": "Automatic reply: Out of office", "body": "Back Monday.",
+    }).json()
+    tid = r["email_thread_id"]
+    assert r["status"] == "logged"
+
+    got = client.get(f"/enquiry/{tid}/supplier-drafts").json()
+    assert got["status"] == "logged"
+    assert got["enquiry_draft"] is None
+    assert got["matched_suppliers"] == []
+    assert got["supplier_drafts"] == []
+    assert got["pipeline_stage"] == "extracted"
+    # received + extracted done, nothing past that
+    keys_done = {n["key"]: n["done"] for n in got["trace"]}
+    assert keys_done["received"] is True and keys_done["extracted"] is True
+    assert keys_done["matched"] is False and keys_done["all_sent"] is False
+
+    desk = client.get("/enquiries?include_all=true").json()["enquiries"]
+    row = next(e for e in desk if e["email_thread_id"] == tid)
+    assert row["status"] == "logged" and row["drafts"] == 0 and row["all_sent"] is False
+
+
+def test_enquiries_row_status_stage_in_sync_after_drafting(client):
+    drafted = client.post("/process-email", json=ENQUIRY).json()
+    tid = drafted["email_thread_id"]
+    row = next(e for e in client.get("/enquiries").json()["enquiries"]
+              if e["email_thread_id"] == tid)
+    assert row["status"] == "drafted"
+    assert row["pipeline_stage"] == "drafted"
+    assert row["drafts"] == len(drafted["supplier_quote_request_ids"])
+    assert row["drafts_total"] == row["drafts"]
+    assert row["all_sent"] is False
+    assert row["sent"] == 0
+
+
+def test_patch_enquiry_draft_free_text_and_validation(client):
+    tid = client.post("/process-email", json=ENQUIRY).json()["email_thread_id"]
+
+    # free-text mode: the body is stored and returned verbatim (tokens kept)
+    r = client.patch(f"/enquiry/{tid}/draft", json={
+        "draft_edit_mode": "free_text",
+        "draft_body": "Hi {{supplier_name}} — bespoke note from the operator.",
+    })
+    assert r.status_code == 200
+    assert r.json()["edit_mode"] == "free_text"
+    assert r.json()["body"] == "Hi {{supplier_name}} — bespoke note from the operator."
+
+    # bad edit mode -> 400 ; empty patch -> 400
+    assert client.patch(f"/enquiry/{tid}/draft", json={"draft_edit_mode": "nope"}).status_code == 400
+    assert client.patch(f"/enquiry/{tid}/draft", json={}).status_code == 400
+
+
 def test_patch_persists_edits(client):
     drafted = client.post("/process-email", json=ENQUIRY).json()
     sqr_id = drafted["supplier_quote_request_ids"][0]

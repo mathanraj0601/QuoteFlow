@@ -28,6 +28,10 @@ smoke_*
 
 # Test / tooling caches
 .pytest_cache/
+.ruff_cache/
+
+# Claude Code local state / agent worktrees
+.claude/
 
 # Frontend (React + Vite)
 frontend/node_modules/

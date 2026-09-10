@@ -74,6 +74,60 @@ def render_body(body_template: str, fields: list[dict]) -> str:
     return substitute(body_template, {f["key"]: f.get("value", "") for f in fields})
 
 
+# Tokens the SYSTEM fills (never operator-editable fields). {{supplier_name}} and
+# {{company}} are deliberately excluded: they stay live in a shared draft and are
+# resolved per recipient at send.
+_SYSTEM_TOKENS = frozenset({
+    "product_name", "broker_name", "broker_email", "client_name", "client_company",
+})
+
+
+# The house shared-outreach body. Used by the stub, and as the fallback when a
+# real model returns an empty / unusable body_template. {{supplier_name}} is left
+# live (filled per recipient at send); the rest are substituted before storage.
+_SHARED_BODY_TEMPLATE = (
+    "Hi {{supplier_name}} team,\n\n"
+    "We have a client enquiry that matches your catalogue and would like your "
+    "best quotation.\n\n"
+    "- Product: {{product_name}}\n"
+    "- Specifications: {{specifications}}\n"
+    "- Quantity requested: {{quantity}}\n"
+    "- Requested delivery: {{delivery}}\n"
+    "- Requested lead time: {{lead_time}}\n\n"
+    "Please confirm your current unit pricing, MOQ, shipping cost, lead time and "
+    "any applicable certifications for this requirement.\n\n"
+    "Best regards,\n{{broker_name}}\n{{broker_email}}"
+)
+
+
+def _canonical_shared_fields(enquiry: "Extraction", context: dict | None = None) -> list[dict]:
+    """The fixed set of operator-editable fields for a shared outreach draft,
+    valued from the extraction. A value we can't fill is left EMPTY and tagged
+    NEEDS-REVIEW so the UI prompts the operator to type it, rather than showing a
+    raw {{token}} or a vague "(to confirm)" default. `lead_time` is the one we
+    always pre-fill (the supplier answers it), so it never blocks a send.
+    """
+    ctx = context or {}
+    uom = enquiry.unit_of_measure or ctx.get("unit_of_measure") or "unit"
+    qty = f"{enquiry.quantity:,} {uom}" if enquiry.quantity else ""
+    specs = _first(enquiry.specifications, ctx.get("product_specifications")) or ""
+    delivery = " / ".join(p for p in (enquiry.delivery_terms, enquiry.destination) if p)
+
+    def mk(key: str, label: str, value: str) -> dict:
+        return {
+            "key": key, "label": label, "value": value,
+            "tag": "AI-GENERATED" if value else "NEEDS-REVIEW",
+            "confidence": 0.7 if value else None,
+        }
+
+    return [
+        mk("quantity", "Quantity requested", qty),
+        mk("specifications", "Specifications", specs),
+        mk("delivery", "Requested delivery", delivery),
+        mk("lead_time", "Requested lead time", "(supplier to advise)"),
+    ]
+
+
 # --------------------------------------------------------------------------- #
 # Provider interface
 # --------------------------------------------------------------------------- #
@@ -304,50 +358,13 @@ class StubProvider:
     ) -> dict:
         """One template for ALL matched suppliers: {{supplier_name}} stays a live
         token (filled per recipient at send), and there is NO price line/field."""
-        uom = enquiry.unit_of_measure or context.get("unit_of_measure") or "unit"
-        qty_val = f"{enquiry.quantity:,} {uom}" if enquiry.quantity else "(quantity to confirm)"
-        specs_val = _first(
-            enquiry.specifications, context.get("product_specifications")
-        ) or "(as per client enquiry)"
-        delivery_val = " / ".join(
-            p for p in (enquiry.delivery_terms, enquiry.destination) if p
-        ) or "(delivery terms to confirm)"
-
-        fields = [
-            {"key": "quantity", "label": "Quantity requested", "value": qty_val,
-             "tag": "AI-GENERATED" if enquiry.quantity else "NEEDS-REVIEW",
-             "confidence": 0.9 if enquiry.quantity else 0.3},
-            {"key": "specifications", "label": "Specifications", "value": specs_val,
-             "tag": "AI-GENERATED" if enquiry.specifications else "FROM-DATABASE",
-             "confidence": 0.7 if enquiry.specifications else None},
-            {"key": "delivery", "label": "Requested delivery", "value": delivery_val,
-             "tag": "AI-GENERATED" if (enquiry.delivery_terms or enquiry.destination)
-             else "NEEDS-REVIEW",
-             "confidence": 0.7 if (enquiry.delivery_terms or enquiry.destination) else 0.3},
-            {"key": "lead_time", "label": "Requested lead time", "value": "(please advise)",
-             "tag": "NEEDS-REVIEW", "confidence": 0.3},
-        ]
-
+        fields = _canonical_shared_fields(enquiry, context)
         product_name = context.get("product_name") or enquiry.product_description
-        fixed = {
+        body_template = substitute(_SHARED_BODY_TEMPLATE, {
             "product_name": product_name,
             "broker_name": settings.broker_name,
             "broker_email": settings.broker_email,
-        }
-        body_template = substitute(
-            "Hi {{supplier_name}} team,\n\n"
-            "We have a client enquiry that matches your catalogue and would like your "
-            "best quotation.\n\n"
-            "- Product: {{product_name}}\n"
-            "- Specifications: {{specifications}}\n"
-            "- Quantity requested: {{quantity}}\n"
-            "- Requested delivery: {{delivery}}\n"
-            "- Requested lead time: {{lead_time}}\n\n"
-            "Please confirm your current unit pricing, MOQ, shipping cost, lead time and "
-            "any applicable certifications for this requirement.\n\n"
-            "Best regards,\n{{broker_name}}\n{{broker_email}}",
-            fixed,
-        )
+        })
         qty_subject = f" - Qty {enquiry.quantity:,}" if enquiry.quantity else ""
         return {
             "to": "{{supplier_name}}",
@@ -402,19 +419,17 @@ _DRAFT_SHARED_SYSTEM = """You draft ONE quote-request email from a procurement b
 sent to SEVERAL matched suppliers at once, based on a client enquiry. Reply with ONE JSON object only:
 
   subject: string
-  body_template: string  - the email body. Address the supplier generically with the literal
-                           token {{supplier_name}} (it is filled in per recipient at send time) -
-                           do NOT name any one supplier. Use {{key}} tokens for every value the
-                           operator may edit; every such token MUST have a matching entry in
-                           "fields". {{product_name}}, {{broker_name}}, {{broker_email}} are
-                           filled by the system.
-  fields: array of { key, label, value, tag, confidence }
-          tag in "AI-GENERATED" | "FROM-DATABASE" | "NEEDS-REVIEW"
-          confidence: number 0..1 or null
+  body_template: string  - the email body, plain text with {{tokens}}.
 
-Allowed fields: quantity, specifications, delivery, lead_time. Do NOT include any reference /
-target / catalogue unit price - a line or a field - anywhere. Pricing is exactly what we are
-asking the suppliers to provide. Ask them to confirm pricing, MOQ, lead time, certifications."""
+Use ONLY these tokens; every one is substituted automatically, so never expand them yourself
+and never invent new ones:
+  {{supplier_name}} - the recipient; keep the greeting generic, never name one supplier
+  {{product_name}} {{broker_name}} {{broker_email}} - system values
+  {{quantity}} {{specifications}} {{delivery}} {{lead_time}} - the request values the operator edits
+
+Do NOT output a "fields" array. Do NOT put any reference / target / catalogue unit price - a
+line, a token or a field - anywhere: pricing is exactly what we are asking the suppliers for.
+Ask them to confirm pricing, MOQ, lead time and certifications."""
 
 
 def _extract_json(text: str) -> dict:
@@ -525,14 +540,27 @@ def _json_to_draft(
     }
 
 
-_PRICE_KEY_RE = re.compile(r"(unit[_ ]?price|target[_ ]?price|reference[_ ]?price|catalogue[_ ]?price)", re.I)
+# Anything price-ish: we never quote a reference price to the suppliers we're
+# asking to price the job. Catches unit_price, target_price, price_ref, "Ref price", ...
+_PRICE_KEY_RE = re.compile(r"price", re.I)
+# A whole bullet/line whose label is about price and whose value is now empty.
+_EMPTY_PRICE_LINE_RE = re.compile(r"(?im)^[ \t]*[-*•]?[ \t]*[^\n:]*\bprice\b[^\n:]*:[ \t]*$\n?")
 
 
 def _json_to_shared_draft(data: dict, enquiry: Extraction, settings: Settings) -> dict:
-    """Map the shared-draft JSON to the stored shape. Keeps {{supplier_name}} live
-    (filled per recipient at send); strips any price field a model slipped in."""
-    fields = [f for f in _sanitize_fields(data.get("fields"))
-              if not _PRICE_KEY_RE.search(f["key"]) and not _PRICE_KEY_RE.search(f["label"])]
+    """Map the shared-draft JSON to the stored shape.
+
+    The model's `fields` list is NOT trusted (small local models echo the
+    template tokens back as values, or expose system tokens like
+    {{broker_name}} as editable rows). We build the canonical field set from the
+    extraction ourselves; a value we can't fill is left empty + NEEDS-REVIEW so
+    the UI prompts the operator. {{supplier_name}} / {{company}} stay live
+    (filled per recipient at send); every other {{token}} is either substituted
+    from the extraction here or surfaced as a NEEDS-REVIEW field — a raw
+    {{token}} must never reach an input box.
+    """
+    fields = _canonical_shared_fields(enquiry)
+
     fixed = {
         "product_name": enquiry.product_description or "the requirement",
         "client_company": enquiry.client_company or "our client",
@@ -540,11 +568,37 @@ def _json_to_shared_draft(data: dict, enquiry: Extraction, settings: Settings) -
         "broker_name": settings.broker_name,
         "broker_email": settings.broker_email,
     }
-    template = str(data.get("body_template") or "")
-    # Fill the system tokens but NOT {{supplier_name}} / the field tokens.
-    body_template = substitute(template, fixed)
+    if enquiry.destination:
+        fixed["destination"] = enquiry.destination
+    if enquiry.urgency and enquiry.urgency != "normal":
+        fixed["urgency"] = enquiry.urgency
+
+    template = str(data.get("body_template") or "").strip() or _SHARED_BODY_TEMPLATE
+    # Kill any price token the model slipped in, then drop the (now-empty) line.
+    price_tokens = {t: "" for t in _TOKEN_RE.findall(template) if _PRICE_KEY_RE.search(t)}
+    body_template = substitute(template, {**fixed, **price_tokens})
+    if price_tokens:
+        body_template = _EMPTY_PRICE_LINE_RE.sub("", body_template)
+
     subject = str(data.get("subject") or f"RFQ - {fixed['product_name']}")
-    subject = render_body(substitute(subject, {**fixed, "supplier_name": ""}), fields)
+    subject = render_body(
+        substitute(subject, {**fixed, **price_tokens, "supplier_name": "", "company": ""}), fields
+    )
+
+    # Any {{token}} still in the body that isn't a per-recipient placeholder and
+    # isn't one of our fields -> expose it as a field to fill, never a bare token.
+    known = {f["key"] for f in fields} | {"supplier_name", "company"}
+    for tok in dict.fromkeys(_TOKEN_RE.findall(body_template)):
+        if tok in known or _PRICE_KEY_RE.search(tok):
+            continue
+        fields.append({
+            "key": tok,
+            "label": tok.replace("_", " ").strip().title() or tok,
+            "value": "",
+            "tag": "NEEDS-REVIEW",
+            "confidence": None,
+        })
+
     return {
         "to": "{{supplier_name}}",
         "subject": subject,

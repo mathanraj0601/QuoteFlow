@@ -108,6 +108,68 @@ def test_process_email_is_idempotent(fresh_store, fresh_conn):
     assert before == after  # no duplicate rows
 
 
+def test_pipeline_emits_progress_events_in_lifecycle_order(fresh_store, fresh_conn, monkeypatch):
+    """The WebSocket feed the UI listens to: received -> extracted -> matched ->
+    drafting -> one 'draft' per supplier -> done('drafted')."""
+    from gmail_trigger_poc import progress
+
+    events: list[tuple[str, dict]] = []
+    monkeypatch.setattr(progress, "emit", lambda ev, **kw: events.append((ev, kw)))
+
+    result = process_email({**BOLTS_ENQUIRY, "id": "pytest-bolts-ws"}, fresh_store)
+    n = len(result["supplier_quote_request_ids"])
+    names = [e for e, _ in events]
+
+    # first signal is the row existing, before any LLM work
+    assert events[0][0] == "thread"
+    assert events[0][1]["status"] == "new" and events[0][1]["pipeline_stage"] == "received"
+    # extraction landed
+    assert any(e == "thread" and kw["status"] == "processing"
+               and kw["pipeline_stage"] == "extracted" for e, kw in events)
+    # matched then drafting stages
+    stages = [kw["pipeline_stage"] for e, kw in events if e == "stage"]
+    assert stages == ["matched", "drafting"]
+    # one 'draft' per supplier, each with a monotonically rising done count
+    draft_dones = [kw["done"] for e, kw in events if e == "draft"]
+    assert draft_dones == list(range(1, n + 1))
+    # terminal
+    assert names[-1] == "done"
+    assert events[-1][1]["status"] == "drafted" and events[-1][1]["drafts"] == n
+
+
+def test_non_enquiry_emits_only_received_then_logged(fresh_store, monkeypatch):
+    from gmail_trigger_poc import progress
+
+    events: list[tuple[str, dict]] = []
+    monkeypatch.setattr(progress, "emit", lambda ev, **kw: events.append((ev, kw)))
+
+    process_email({
+        "id": "pytest-ooo-ws", "thread_id": "z", "from": "bot@corp.com",
+        "to": "procurement@meridiantrade.com",
+        "subject": "Automatic reply: Out of office", "body": "Away.",
+    }, fresh_store)
+
+    kinds = [(e, kw.get("status"), kw.get("pipeline_stage")) for e, kw in events]
+    assert kinds == [
+        ("thread", "new", "received"),
+        ("thread", "logged", "extracted"),
+    ]
+    assert not any(e in ("stage", "draft", "done") for e, _ in events)
+
+
+def test_pipeline_lands_all_lifecycle_columns(fresh_store, fresh_conn):
+    result = process_email({**BOLTS_ENQUIRY, "id": "pytest-bolts-cols"}, fresh_store)
+    row = fresh_conn.execute(
+        "SELECT status, pipeline_stage, matched_suppliers_json, drafts_total, "
+        "draft_subject, draft_body_template, draft_fields_json FROM email_threads WHERE id = ?",
+        (result["email_thread_id"],),
+    ).fetchone()
+    assert row["status"] == "drafted" and row["pipeline_stage"] == "drafted"
+    assert row["matched_suppliers_json"] and row["draft_subject"]
+    assert row["draft_body_template"] and row["draft_fields_json"]
+    assert row["drafts_total"] == len(result["supplier_quote_request_ids"])
+
+
 def test_enquiry_off_catalogue_still_returns_drafted(fresh_store):
     email = {
         "id": "pytest-offcat-1", "thread_id": "oc", "from": "buyer@example.com",
