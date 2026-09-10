@@ -571,23 +571,7 @@ main {
 }
 .progress b { color: var(--text); }
 
-/* ---------- supplier cards (per-supplier draft flow) ---------- */
-.scard {
-  padding: 16px;
-  border-bottom: 1px solid var(--border);
-  transition: background 0.16s ease;
-}
-.scard:last-child { border-bottom: none; }
-.scard:hover { background: var(--surface-1); }
-.scard.sent { opacity: 0.62; }
-.sc1 { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
-.sname { font-weight: 700; font-size: 13.5px; }
-.smeta { font-size: 11.5px; color: var(--text-faint); margin: 3px 0 12px; }
-
-.match-meter { display: inline-flex; align-items: center; gap: 7px; font-size: 10px; font-weight: 800; color: var(--text-soft); text-transform: uppercase; letter-spacing: 0.04em; }
-.match-meter .track { width: 46px; height: 5px; border-radius: var(--r-pill); background: var(--surface-3); overflow: hidden; }
-.match-meter .fill { height: 100%; background: var(--accent-grad); border-radius: var(--r-pill); }
-
+/* ---------- outreach mail block (shared by .so-mail) ---------- */
 .mail { background: rgba(255, 255, 255, 0.03); border: 1px solid var(--border); border-radius: var(--r-sm); padding: 12px; margin-bottom: 12px; }
 .mrow { display: flex; gap: 10px; align-items: center; margin-bottom: 8px; }
 .mrow span { width: 52px; font-size: 9.5px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-faint); font-weight: 700; flex-shrink: 0; }
