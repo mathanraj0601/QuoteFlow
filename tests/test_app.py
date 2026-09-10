@@ -29,6 +29,13 @@ def client(fresh_store):
         yield c
 
 
+def test_dashboard_served(client):
+    r = client.get("/")
+    assert r.status_code == 200
+    assert "text/html" in r.headers["content-type"]
+    assert "QuoteFlow" in r.text and "/enquiry/" in r.text  # SPA wired to the API
+
+
 def test_health(client):
     body = client.get("/health").json()
     assert body["status"] == "ok"

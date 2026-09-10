@@ -12,8 +12,10 @@ import os
 import threading
 import time
 from contextlib import asynccontextmanager, contextmanager
+from pathlib import Path
 
 from fastapi import Body, FastAPI, HTTPException, Request
+from fastapi.responses import FileResponse
 
 from gmail_trigger_poc import repository
 from gmail_trigger_poc.config import get_settings
@@ -59,6 +61,14 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="gmail-trigger-poc", lifespan=lifespan)
+
+_WEB_DIR = Path(__file__).with_name("web")
+
+
+@app.get("/", include_in_schema=False)
+def dashboard() -> FileResponse:
+    """The Supplier Outreach Desk — a single-page dashboard over all the endpoints."""
+    return FileResponse(_WEB_DIR / "index.html")
 
 
 @contextmanager
