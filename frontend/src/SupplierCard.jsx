@@ -1,5 +1,7 @@
 import { useState } from "react";
+import { motion } from "framer-motion";
 import { api, composeBody } from "./api.js";
+import { fadeUp, pressable, spring, staggerContainer } from "./motion.js";
 
 export default function SupplierCard({ draft, onChanged, toast }) {
   const sent = draft.status === "sent";
@@ -9,6 +11,7 @@ export default function SupplierCard({ draft, onChanged, toast }) {
   const [busy, setBusy] = useState(false);
 
   const body = composeBody(draft.draft_body_template, fields);
+  const matchPct = Math.round((draft.match_score || 0) * 100);
 
   const setFieldValue = (i, value) =>
     setFields((fs) => fs.map((f, j) => (j === i ? { ...f, value } : f)));
@@ -40,14 +43,22 @@ export default function SupplierCard({ draft, onChanged, toast }) {
   }
 
   return (
-    <div className={"scard" + (sent ? " sent" : "")}>
+    <motion.div className={"scard" + (sent ? " sent" : "")} layout transition={spring}>
       <div className="sc1">
         <div className="sname">{draft.supplier_name}</div>
         {sent ? (
           <span className="badge sent">sent</span>
         ) : (
-          <span className="badge drafted">
-            match {Math.round((draft.match_score || 0) * 100)}%
+          <span className="match-meter">
+            <span className="track">
+              <motion.span
+                className="fill"
+                initial={{ width: 0 }}
+                animate={{ width: `${matchPct}%` }}
+                transition={{ duration: 0.6, ease: [0.22, 1, 0.36, 1] }}
+              />
+            </span>
+            match {matchPct}%
           </span>
         )}
       </div>
@@ -73,9 +84,14 @@ export default function SupplierCard({ draft, onChanged, toast }) {
         <div className="mbody">{sent ? draft.draft_body : body}</div>
       </div>
 
-      <div className="fields">
+      <motion.div
+        className="fields"
+        variants={staggerContainer(0.035)}
+        initial="hidden"
+        animate="show"
+      >
         {fields.map((f, i) => (
-          <div className="f" key={f.key}>
+          <motion.div key={f.key} variants={fadeUp}>
             <div className="flabel">
               <span>{f.label}</span>
               <span className={"tag " + f.tag}>{f.tag}</span>
@@ -86,20 +102,21 @@ export default function SupplierCard({ draft, onChanged, toast }) {
               disabled={sent}
               onChange={(e) => setFieldValue(i, e.target.value)}
             />
-          </div>
+          </motion.div>
         ))}
-      </div>
+      </motion.div>
 
       {!sent && (
         <div className="actions">
-          <button className="btn primary" disabled={busy} onClick={send}>
+          <motion.button className="btn primary" {...pressable} disabled={busy} onClick={send}>
+            {busy && <span className="spinner" />}
             Send to supplier
-          </button>
-          <button className="btn ghost" disabled={busy} onClick={save}>
+          </motion.button>
+          <motion.button className="btn ghost" {...pressable} disabled={busy} onClick={save}>
             Save draft
-          </button>
+          </motion.button>
         </div>
       )}
-    </div>
+    </motion.div>
   );
 }

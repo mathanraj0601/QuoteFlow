@@ -1,14 +1,27 @@
 import { useCallback, useEffect, useState } from "react";
+import { motion, useMotionValue, useSpring, useTransform } from "framer-motion";
 import { api } from "./api.js";
+import { fadeUp, pressable, staggerContainer, viewSwap } from "./motion.js";
 import SupplierCard from "./SupplierCard.jsx";
 
 const STEPS_DONE = (trace) => trace.filter((n) => n.done).length;
+
+// Smoothly eased integer that chases `value` — used for the ring % readout.
+function useCountUp(value) {
+  const mv = useMotionValue(value);
+  const s = useSpring(mv, { stiffness: 120, damping: 22, mass: 0.7 });
+  useEffect(() => {
+    mv.set(value);
+  }, [value, mv]);
+  return useTransform(s, (v) => Math.round(v));
+}
 
 // The processing trace from GET /enquiry/{id}/supplier-drafts — shown while the
 // enquiry is still New / Processing (mirrors the prototype's "procView").
 function ProcessingTrace({ status, stage, trace, draftProgress }) {
   const done = STEPS_DONE(trace);
   const pct = Math.round((done / trace.length) * 100);
+  const pctText = useCountUp(pct);
   const dp = draftProgress || { done: 0, total: 0 };
   const drafting = (stage === "drafting" || stage === "matched") && dp.total > 0;
   return (
@@ -17,12 +30,16 @@ function ProcessingTrace({ status, stage, trace, draftProgress }) {
         <div
           className="ring"
           style={{
-            background: `conic-gradient(var(--brass) ${pct * 3.6}deg, var(--line) 0)`,
+            background: `conic-gradient(var(--accent) ${pct * 3.6}deg, var(--surface-3) 0)`,
           }}
         >
           <div className="hole">
-            <b>{pct}%</b>
-            <span>{done} of {trace.length}</span>
+            <b>
+              <motion.span>{pctText}</motion.span>%
+            </b>
+            <span>
+              {done} of {trace.length}
+            </span>
           </div>
         </div>
         <div>
@@ -51,18 +68,35 @@ function ProcessingTrace({ status, stage, trace, draftProgress }) {
         </div>
       )}
 
-      <div className="trace">
+      <motion.div
+        className="trace"
+        variants={staggerContainer(0.05)}
+        initial="hidden"
+        animate="show"
+      >
         {trace.map((n) => (
-          <div className={"trow" + (n.done ? "" : " pending")} key={n.key}>
+          <motion.div
+            className={"trow" + (n.done ? " done" : " pending")}
+            key={n.key}
+            variants={fadeUp}
+          >
             <div className={"node" + (n.done ? " done" : "")} />
             <div>
               <h4>{n.label}</h4>
               <p>{n.detail || "Pending"}</p>
             </div>
-          </div>
+          </motion.div>
         ))}
-      </div>
+      </motion.div>
     </div>
+  );
+}
+
+function CloseIcon() {
+  return (
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <path d="M6 6l12 12M18 6L6 18" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" />
+    </svg>
   );
 }
 
@@ -98,29 +132,42 @@ export default function EnquiryDetail({ threadId, live, onClose, onActivity, toa
   const inProgress = data.status === "new" || data.status === "processing";
 
   return (
-    <>
+    <motion.div variants={viewSwap} initial="hidden" animate="show">
       <div className="phead">
         <h2>
           Enquiry #{data.email_thread_id}
           {data.status && <span className={"badge " + data.status}>{data.status}</span>}
         </h2>
-        <button className="btn ghost" onClick={onClose}>
-          close
-        </button>
+        <motion.button
+          className="btn ghost icon"
+          {...pressable}
+          onClick={onClose}
+          aria-label="Close enquiry"
+        >
+          <CloseIcon />
+        </motion.button>
       </div>
 
       <div className="email-card">
         <div className="lbl">Original client email</div>
-        <div className="kv" style={{ marginTop: 6 }}>
+        <div className="kv" style={{ marginTop: 8 }}>
           <b>From</b> {oe.from}
         </div>
         <div className="kv">
           <b>Subject</b> {oe.subject}
         </div>
         {ex.scenario && (
-          <div className="kv">
-            <b>Extracted</b> {ex.product_description} · qty {String(ex.quantity)}{" "}
-            {ex.unit_of_measure || ""} · {ex.delivery_terms || "—"} · urgency {ex.urgency}
+          <div className="chipset">
+            <span className="mini">
+              <b>{ex.product_description}</b>
+            </span>
+            <span className="mini">
+              qty <b>{String(ex.quantity)}</b> {ex.unit_of_measure || ""}
+            </span>
+            <span className="mini">{ex.delivery_terms || "—"}</span>
+            <span className="mini">
+              urgency <b>{ex.urgency}</b>
+            </span>
           </div>
         )}
         <div className="txt">{oe.body}</div>
@@ -147,19 +194,22 @@ export default function EnquiryDetail({ threadId, live, onClose, onActivity, toa
               No supplier cleared the match threshold for this enquiry.
             </div>
           )}
-          {data.supplier_drafts.map((d) => (
-            <SupplierCard
-              key={d.id}
-              draft={d}
-              onChanged={() => {
-                load();
-                onActivity?.();
-              }}
-              toast={toast}
-            />
-          ))}
+          <motion.div variants={staggerContainer(0.06)} initial="hidden" animate="show">
+            {data.supplier_drafts.map((d) => (
+              <motion.div key={d.id} variants={fadeUp}>
+                <SupplierCard
+                  draft={d}
+                  onChanged={() => {
+                    load();
+                    onActivity?.();
+                  }}
+                  toast={toast}
+                />
+              </motion.div>
+            ))}
+          </motion.div>
         </>
       )}
-    </>
+    </motion.div>
   );
 }
