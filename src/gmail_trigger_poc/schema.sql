@@ -160,7 +160,23 @@ CREATE TABLE IF NOT EXISTS email_threads (
     -- How many matched suppliers this enquiry will draft to (set once at match
     -- time); drafts_done is COUNT(supplier_quote_requests) as they commit one by
     -- one, so the UI can show "Drafting 2 of 3 ...".
-    drafts_total            INTEGER
+    drafts_total            INTEGER,
+    -- Who matched, snapshotted at match time so the trace can name them after a
+    -- page refresh (not just on the live WebSocket tick). JSON array of
+    -- {supplier_id, supplier_name, supplier_email, match_score}.
+    matched_suppliers_json  TEXT,
+
+    -- [gmail-trigger-poc] v2SQ shared outreach draft. One editable email per
+    -- enquiry (subject + {{token}} body template + structured fields), authored
+    -- once by the operator and sent to any subset of the matched suppliers with
+    -- {{supplier_name}} filled in per recipient. The per-supplier
+    -- supplier_quote_requests rows are the send *records* (who / status /
+    -- sent_at + the exact text that went to that supplier).
+    draft_subject           TEXT,
+    draft_body_template     TEXT,                        -- {{supplier_name}} stays live here; filled at send
+    draft_fields_json       TEXT,                        -- [{key,label,value,tag,confidence}] — NO price field
+    draft_edit_mode         TEXT                         -- 'fields' (default) | 'free_text'
+                              CHECK (draft_edit_mode IS NULL OR draft_edit_mode IN ('fields','free_text'))
 );
 
 -- ----------------------------------------------------------------------------

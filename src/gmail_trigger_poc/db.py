@@ -47,6 +47,11 @@ _ADDITIVE_COLUMNS: dict[str, dict[str, str]] = {
         "pipeline_stage": "TEXT",
         "pipeline_updated_at": "TIMESTAMP",
         "drafts_total": "INTEGER",
+        "matched_suppliers_json": "TEXT",
+        "draft_subject": "TEXT",
+        "draft_body_template": "TEXT",
+        "draft_fields_json": "TEXT",
+        "draft_edit_mode": "TEXT",
     },
 }
 

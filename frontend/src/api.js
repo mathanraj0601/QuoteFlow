@@ -21,6 +21,11 @@ export const api = {
   processEmail: (msg) => json("POST", "/process-email", msg),
   patchDraft: (id, patch) => json("PATCH", `/supplier-quote-requests/${id}`, patch),
   sendDraft: (id, payload) => json("POST", `/supplier-quote-requests/${id}/send`, payload || {}),
+  // v2SQ: one shared outreach draft per enquiry, sent to a chosen set of suppliers.
+  patchEnquiryDraft: (threadId, patch) =>
+    json("PATCH", `/enquiry/${threadId}/draft`, patch),
+  sendEnquiry: (threadId, supplierIds) =>
+    json("POST", `/enquiry/${threadId}/send`, { supplier_ids: supplierIds }),
   suppliers: () => req("/suppliers"),
 };
 

@@ -2,8 +2,9 @@
 
 Local POC for **QuoteFlow** (v2SQ — supplier-quote outreach). A Python process
 polls a Gmail inbox and hands every new email to `process_email()`, which
-classifies it, extracts the enquiry, matches suppliers, and drafts one outreach
-email per matched supplier. Runs entirely on localhost — **polling**
+records it (`received`), classifies it, extracts the enquiry, matches suppliers,
+and drafts **one shared outreach email** the operator sends to any subset of the
+matched suppliers in a single click. Runs entirely on localhost — **polling**
 (`users.history.list`), **SQLite**, embedded **ChromaDB**; no webhook or domain.
 
 - **Step 1** — Gmail OAuth + history-based polling. ✅
@@ -18,14 +19,19 @@ Gmail inbox (test account)
 Single FastAPI process  (uvicorn gmail_trigger_poc.app:app)
       ├── poll_gmail() thread ──┐
       │                         ▼
-      │        process_email(email) ─ classify+extract (LLM)
+      │        process_email(email) ─ insert email_threads row  (status 'new' / 'received')
+      │                             ─ classify+extract (LLM)         → 'processing' / 'extracted'
       │                             ─ match: Chroma products → SQL suppliers → rerank
-      │                             ─ draft 1 outreach email per supplier ≥ threshold (LLM)
-      │                             → supplier_quote_requests rows  (status 'draft')
+      │                             ─ snapshot matched_suppliers_json → 'matched'
+      │                             ─ draft ONE shared outreach email (LLM)  → 'drafting'
+      │                             → email_threads.draft_* + one supplier_quote_requests
+      │                               send-record per matched supplier  (status 'draft')
       │                         ▲
       └── POST /process-email ──┘  thin wrapper for curl/Postman
-              GET  /enquiry/{id}/supplier-drafts     GET /enquiries  /suppliers
-              PATCH/POST /supplier-quote-requests/{id}[/send]
+              GET   /enquiry/{id}/supplier-drafts    GET /enquiries  /suppliers
+              PATCH /enquiry/{id}/draft              edit the one shared draft
+              POST  /enquiry/{id}/send  {supplier_ids:[…]}   send it to a chosen subset
+              PATCH/POST /supplier-quote-requests/{id}[/send]   (per-row, kept for back-compat)
 ```
 
 ## Layout
@@ -101,10 +107,13 @@ resetting; `--demo` also overlays `data/demo_enquiries.json` — six enquiries
 frozen at different lifecycle stages, IDs `9000+`, for walkthroughs).
 
 **Enquiry lifecycle** (`email_threads.status` / `pipeline_stage`, surfaced on the
-Desk as badges + a processing trace): `new` → `processing`
-(`received`→`extracted`→`matched`) → `drafted`, or `logged` for a non-enquiry.
-The live pipeline writes these progressively, so a slow multi-supplier draft
-shows a real "Processing" badge. "Fully sent" is computed (`all_sent`: every
+Desk as badges + a processing trace): `new`/`received` (row written the instant
+the email lands, before any LLM call) → `processing`
+(`extracted`→`matched`→`drafting`) → `drafted`, or `logged` for a non-enquiry.
+The live pipeline writes these progressively, so the Desk shows "Enquiry
+received" in real time and then a real "Processing" badge while drafting. The
+matched suppliers are snapshotted (`matched_suppliers_json`) so the trace names
+them after a refresh. "Fully sent" is computed (`all_sent`: every
 `supplier_quote_requests` row sent), never a stored status.
 The Gmail poller also needs `credentials.json` (Google Cloud OAuth client, Desktop
 app) in this folder — first run opens a browser once for consent, then caches
@@ -113,11 +122,13 @@ app) in this folder — first run opens a browser once for consent, then caches
 ### Dashboard
 
 Open <http://127.0.0.1:8000/> — the **Supplier Outreach Desk**: live enquiry
-list, the stacked supplier-card builder (per-field `AI-GENERATED` /
-`FROM-DATABASE` / `NEEDS-REVIEW` tags + live body re-render), Save (`PATCH`) /
-Send (`POST …/send`), a supplier directory, and a **Simulate email** button that
-`POST`s `/process-email` — the same call the poller makes — so the whole flow is
-demoable without sending real mail.
+list, the **one shared outreach editor** (subject + `{{supplier_name}}`-tokened
+body + per-field `AI-GENERATED` / `FROM-DATABASE` / `NEEDS-REVIEW` tags with live
+re-render — no reference price), a **checkbox list of the matched suppliers**, and
+a single **Send to N suppliers** button (`POST /enquiry/{id}/send`) that mails the
+same text to every ticked supplier with their own name filled in. Plus a supplier
+directory and a **Simulate email** button that `POST`s `/process-email` — the same
+call the poller makes — so the whole flow is demoable without sending real mail.
 
 ```bash
 cd frontend && npm install && npm run build    # -> frontend/dist/, served by the API at /
@@ -138,8 +149,11 @@ curl -X POST localhost:8000/process-email -H 'content-type: application/json' -d
   "body":"- Product: Stainless Steel Bolts M10x50\n- Quantity required: 5,000 pieces\n- Preferred delivery terms: FOB Shanghai\n- Specifications: Grade A2-70, DIN 933\n- Delivery location: Ohio, USA"}'
 # -> {"status":"drafted","email_thread_id":N,"supplier_quote_request_ids":[...],...}
 
-curl localhost:8000/enquiry/N/supplier-drafts
-curl -X POST localhost:8000/supplier-quote-requests/1/send -d '{}'   # mark-only, no gmail.send
+curl localhost:8000/enquiry/N/supplier-drafts        # shared draft + matched-supplier checklist
+curl -X PATCH localhost:8000/enquiry/N/draft -H 'content-type: application/json' \
+  -d '{"draft_subject":"RFQ - bolts","fields":[…]}'  # edit the one shared draft
+curl -X POST localhost:8000/enquiry/N/send -H 'content-type: application/json' \
+  -d '{"supplier_ids":[1,2]}'                        # mark-only send to a chosen subset, no gmail.send
 ```
 
 ### Working without API keys

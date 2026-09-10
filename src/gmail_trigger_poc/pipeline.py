@@ -27,20 +27,24 @@ from typing import Any
 
 from gmail_trigger_poc.config import Settings, get_settings
 from gmail_trigger_poc.db import connect
-from gmail_trigger_poc.llm import get_provider
+from gmail_trigger_poc.llm import get_provider, substitute
 from gmail_trigger_poc.logging_setup import body_block, preview
 from gmail_trigger_poc.matching import find_matches
 from gmail_trigger_poc import progress
 from gmail_trigger_poc.repository import (
+    attach_extraction,
     bare_email,
+    create_received_thread,
     create_supplier_quote_request,
     delete_incomplete_thread,
     finalize_thread_status,
     find_thread_by_message_id,
     get_or_create_client,
-    insert_inbound_thread,
     list_supplier_drafts,
+    render_for_supplier,
     set_drafts_total,
+    set_enquiry_draft,
+    set_matched_suppliers,
     set_pipeline_stage,
 )
 
@@ -78,17 +82,23 @@ def _demo_pause(settings: Settings, after: str) -> None:
 _FLOW_DIAGRAM = r"""
    inbound email
         |
-   [STEP 1] classify + extract .......... LLM  -> scenario / product / qty / incoterm / dest
-        |                                 (not a client enquiry -> log thread, stop)
+   [STEP 1] receive ..................... REPO insert email_threads (status='new', stage='received')
+        |                                 -> Desk shows "Enquiry received" in real time
         v
-   [STEP 2] match suppliers ............. VDB  Chroma vector search (top-N products)
+   [STEP 2] classify + extract .......... LLM  -> scenario / product / qty / incoterm / dest
+        |                                 REPO attach extraction (status='processing', 'extracted')
+        |                                 (not a client enquiry -> status='logged', stop)
+        v
+   [STEP 3] match suppliers ............. VDB  Chroma vector search (top-N products)
         |                                 REPO SQL join -> supplier_products + suppliers
         |                                 MATCH rerank -> match_score 0..1, keep >= threshold
+        |                                 REPO snapshot matched_suppliers_json, stage='matched'
         v
-   [STEP 3] draft outreach ............. LLM  one email per kept supplier
-        |                                 REPO insert supplier_quote_requests (status='draft')
+   [STEP 4] draft + fan out ............ LLM  ONE shared outreach email ({{supplier_name}} token)
+        |                                 REPO email_threads.draft_* ; stage='drafting'
+        |                                 REPO one supplier_quote_requests send-record per supplier
         v
-   [STEP 4] persist + finalize ......... REPO email_threads.status = 'drafted', commit
+   [STEP 5] persist + finalize ......... REPO email_threads.status = 'drafted', commit
         |
    result -> {status, email_thread_id, supplier_quote_request_ids[], matched_suppliers[]}
 """
@@ -166,7 +176,7 @@ def _process(email_data: dict[str, Any], settings: Settings, conn) -> dict[str, 
                     settings.pipeline_step_delay_seconds)
 
     # --- idempotency: has this exact Gmail message already been processed? -----
-    logger.info("STEP 0/4 idempotency check  (email_threads.gmail_message_id UNIQUE)")
+    logger.info("STEP 0/5 idempotency check  (email_threads.gmail_message_id UNIQUE)")
     prior = find_thread_by_message_id(msg_id, conn)
     if prior is not None:
         prior_status = prior["status"] if "status" in prior.keys() else None
@@ -184,7 +194,17 @@ def _process(email_data: dict[str, Any], settings: Settings, conn) -> dict[str, 
     else:
         logger.info("         -> new message, proceeding")
 
-    logger.info("STEP 1/4 classify + extract  (provider=%s)", settings.llm_provider)
+    # STEP 1 — receive: the row (and the Desk's "Enquiry received") exists before any LLM call.
+    logger.info("STEP 1/5 receive  (insert email_threads: status='new', stage='received')")
+    thread_row_id = create_received_thread(email_data, conn, broker_email=settings.broker_email)
+    conn.commit()
+    progress.emit("thread", email_thread_id=thread_row_id, status="new",
+                  pipeline_stage="received", subject=email_data.get("subject"),
+                  from_email=bare_email(email_data.get("from")))
+    logger.info("         -> email_thread id=%s created (status=new / received)", thread_row_id)
+    _demo_pause(settings, "STEP 1 (row now 'new / received')")
+
+    logger.info("STEP 2/5 classify + extract  (provider=%s)", settings.llm_provider)
     provider = get_provider(settings)
     extraction = provider.classify_and_extract(email_data)
     logger.info("         -> scenario   = %s  (confidence %.2f)",
@@ -199,12 +219,9 @@ def _process(email_data: dict[str, Any], settings: Settings, conn) -> dict[str, 
                 extraction.urgency)
 
     if extraction.scenario != "client_enquiry":
-        logger.info("         -> not a client enquiry; logging the thread and stopping here")
-        thread_row_id = insert_inbound_thread(
-            email_data, extraction, conn, broker_email=settings.broker_email,
-            status="logged", pipeline_stage="extracted",
-        )
-        conn.commit()
+        logger.info("         -> not a client enquiry; marking the thread 'logged' and stopping here")
+        attach_extraction(thread_row_id, extraction, conn, status="logged",
+                          pipeline_stage="extracted")
         progress.emit("thread", email_thread_id=thread_row_id, status="logged",
                       pipeline_stage="extracted", subject=email_data.get("subject"))
         logger.info("================ PIPELINE END: LOGGED (%s), thread %s, no drafts ================",
@@ -215,23 +232,18 @@ def _process(email_data: dict[str, Any], settings: Settings, conn) -> dict[str, 
             "email_thread_id": thread_row_id,
         }
 
-    logger.info("STEP 1/4 done -> persisting client + inbound thread (status='processing')")
+    logger.info("STEP 2/5 done -> attaching extraction + client (status='processing')")
     client_id = get_or_create_client(extraction, email_data.get("from") or "", conn)
-    # Row is born 'processing'/'extracted' (classify+extract already ran above);
-    # the stage is bumped to 'matched' then 'drafted' as the pipeline proceeds so
-    # the Desk shows a live "Processing" badge for the slow per-supplier drafting.
-    thread_row_id = insert_inbound_thread(
-        email_data, extraction, conn, broker_email=settings.broker_email
-    )
-    conn.commit()
+    attach_extraction(thread_row_id, extraction, conn, status="processing",
+                      pipeline_stage="extracted")
     progress.emit("thread", email_thread_id=thread_row_id, status="processing",
                   pipeline_stage="extracted", subject=email_data.get("subject"),
                   from_email=bare_email(email_data.get("from")))
     logger.info("         -> client id=%s, email_thread id=%s (status=processing)",
                 client_id, thread_row_id)
-    _demo_pause(settings, "STEP 1 (row now 'processing / extracted')")
+    _demo_pause(settings, "STEP 2 (row now 'processing / extracted')")
 
-    logger.info("STEP 2/4 match suppliers  (Chroma vector search -> SQL join -> rerank)")
+    logger.info("STEP 3/5 match suppliers  (Chroma vector search -> SQL join -> rerank)")
     query_text = extraction.product_description or (email_data.get("subject") or "")
     logger.info("         query text = %r  | top_n=%d  threshold=%.2f",
                 query_text, settings.match_top_n, settings.match_score_threshold)
@@ -248,21 +260,25 @@ def _process(email_data: dict[str, Any], settings: Settings, conn) -> dict[str, 
             c.get("unit_price"),
         )
     logger.info(
-        "         -> %d candidate(s) ranked, %d clear the %.2f threshold -> %d draft(s) to write",
-        len(ranked), len(above), threshold, len(above),
+        "         -> %d candidate(s) ranked, %d clear the %.2f threshold",
+        len(ranked), len(above), threshold,
     )
+    set_matched_suppliers(thread_row_id, above, conn)
     set_pipeline_stage(thread_row_id, "matched", conn)
     set_drafts_total(thread_row_id, len(above), conn)
+    for c in above:
+        logger.info("         matched: %s <%s>  score=%.3f",
+                    c.get("supplier_name"), c.get("supplier_email"), c.get("match_score") or 0.0)
     progress.emit("stage", email_thread_id=thread_row_id, status="processing",
                   pipeline_stage="matched", drafts=0, drafts_total=len(above),
                   matched_suppliers=[c.get("supplier_name") for c in above])
-    _demo_pause(settings, "STEP 2 (row now 'processing / matched')")
+    _demo_pause(settings, "STEP 3 (row now 'processing / matched')")
     if not above:
         finalize_thread_status(thread_row_id, "drafted", conn)
         progress.emit("done", email_thread_id=thread_row_id, status="drafted",
                       drafts=0, drafts_total=0)
         logger.warning(
-            "STEP 3/4 draft: no supplier >= %.2f (top=%.3f) -> nothing to draft",
+            "STEP 4/5 draft: no supplier >= %.2f (top=%.3f) -> nothing to draft",
             threshold, ranked[0]["match_score"] if ranked else 0.0,
         )
         logger.info("================ PIPELINE END: DRAFTED 0 outreach, thread %s ================",
@@ -276,44 +292,56 @@ def _process(email_data: dict[str, Any], settings: Settings, conn) -> dict[str, 
             "scenario": extraction.scenario,
         }
 
-    logger.info("STEP 3/4 draft outreach  (LLM, one email per supplier -> %d call(s))", len(above))
+    logger.info("STEP 4/5 draft ONE shared outreach email + fan out to %d supplier(s)", len(above))
+    top = above[0]
+    context = {
+        "product_name": top.get("product_name") or extraction.product_description,
+        "product_specifications": top.get("product_specifications"),
+        "unit_of_measure": top.get("unit_of_measure"),
+    }
+    shared = provider.draft_shared_outreach(extraction, context, settings)
+    set_enquiry_draft(thread_row_id, shared, conn)
+    for f in shared.get("fields", []):
+        logger.info("         field  %-24s [%s] = %r", f.get("key"), f.get("tag"), f.get("value"))
+    logger.info("         shared subject: %r", shared.get("subject"))
+    for line in (shared.get("body") or "").splitlines():
+        logger.info("         shared body | %s", line)
     set_pipeline_stage(thread_row_id, "drafting", conn)
     progress.emit("stage", email_thread_id=thread_row_id, status="processing",
                   pipeline_stage="drafting", drafts=0, drafts_total=len(above))
+
     draft_ids: list[int] = []
     for n, candidate in enumerate(above, 1):
-        logger.info("         --- draft [%d/%d] : %s <%s> ---",
-                    n, len(above), candidate.get("supplier_name"),
-                    candidate.get("supplier_email"))
+        supplier_name = candidate.get("supplier_name") or "team"
+        logger.info("         --- fan-out [%d/%d] : %s <%s> ---",
+                    n, len(above), supplier_name, candidate.get("supplier_email"))
         progress.emit("draft_start", email_thread_id=thread_row_id, done=n - 1,
-                      total=len(above), supplier=candidate.get("supplier_name"))
-        draft = provider.draft_supplier_outreach(extraction, candidate, settings)
-        if not draft.get("to"):
-            draft["to"] = candidate.get("supplier_email") or ""
-        for f in draft.get("fields", []):
-            logger.info("             field  %-24s [%s] = %r",
-                        f.get("key"), f.get("tag"), f.get("value"))
-        logger.info("             subject: %r", draft.get("subject"))
-        for line in (draft.get("body") or "").splitlines():
-            logger.info("             body | %s", line)
+                      total=len(above), supplier=supplier_name)
+        per_supplier = {
+            "to": candidate.get("supplier_email") or "",
+            "subject": shared["subject"],
+            "body": render_for_supplier(shared["body_template"], shared["fields"], supplier_name),
+            "body_template": substitute(shared["body_template"], {"supplier_name": supplier_name}),
+            "fields": shared["fields"],
+        }
         sqr_id = create_supplier_quote_request(
             email_thread_id=thread_row_id,
             client_id=client_id,
             candidate=candidate,
-            draft=draft,
+            draft=per_supplier,
             extraction=extraction,
             match_score=candidate["match_score"],
             conn=conn,
         )
         draft_ids.append(sqr_id)
-        conn.commit()  # commit each draft as it lands so the Desk count advances live
+        conn.commit()  # commit each send-record as it lands so the Desk count advances live
         progress.emit("draft", email_thread_id=thread_row_id, done=n, total=len(above),
-                      supplier=candidate.get("supplier_name"), sqr_id=sqr_id)
+                      supplier=supplier_name, sqr_id=sqr_id)
         logger.info("         [%d/%d] -> supplier_quote_requests id=%s written & committed",
                     n, len(above), sqr_id)
-        _demo_pause(settings, f"draft {n}/{len(above)} written")
+        _demo_pause(settings, f"fan-out {n}/{len(above)} written")
 
-    logger.info("STEP 4/4 persist & finalize  (email_threads.status -> 'drafted', commit)")
+    logger.info("STEP 5/5 persist & finalize  (email_threads.status -> 'drafted', commit)")
     finalize_thread_status(thread_row_id, "drafted", conn)
     conn.commit()
     progress.emit("done", email_thread_id=thread_row_id, status="drafted",
@@ -329,7 +357,7 @@ def _process(email_data: dict[str, Any], settings: Settings, conn) -> dict[str, 
     }
     logger.info("         result = %s", result)
     logger.info(
-        "================ PIPELINE END: DRAFTED %d outreach email(s), thread %s ================",
+        "================ PIPELINE END: DRAFTED shared outreach -> %d supplier(s), thread %s ================",
         len(draft_ids), thread_row_id,
     )
     return result

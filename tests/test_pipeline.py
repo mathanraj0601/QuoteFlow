@@ -68,6 +68,30 @@ def test_client_enquiry_drafts_supplier_outreach(fresh_store, fresh_conn):
     assert specs == {"Industrial Fasteners"}
 
 
+def test_matched_suppliers_and_shared_draft_snapshotted(fresh_store, fresh_conn):
+    result = process_email({**BOLTS_ENQUIRY, "id": "pytest-bolts-shared"}, fresh_store)
+    tid = result["email_thread_id"]
+    row = fresh_conn.execute(
+        "SELECT matched_suppliers_json, draft_subject, draft_body_template, draft_fields_json "
+        "FROM email_threads WHERE id = ?",
+        (tid,),
+    ).fetchone()
+    import json as _json
+
+    matched = _json.loads(row["matched_suppliers_json"])
+    assert matched and {"supplier_id", "supplier_name", "match_score"} <= set(matched[0])
+    # one shared draft, {{supplier_name}} kept live, no price token/field
+    assert "{{supplier_name}}" in row["draft_body_template"]
+    assert "unit_price" not in row["draft_body_template"]
+    fields = _json.loads(row["draft_fields_json"])
+    assert not any("price" in f["key"] for f in fields)
+    # every per-supplier send record has {{supplier_name}} already resolved
+    for r in fresh_conn.execute(
+        "SELECT draft_body FROM supplier_quote_requests WHERE email_thread_id = ?", (tid,)
+    ):
+        assert "{{supplier_name}}" not in r["draft_body"]
+
+
 def test_process_email_is_idempotent(fresh_store, fresh_conn):
     first = process_email({**BOLTS_ENQUIRY, "id": "pytest-bolts-idem"}, fresh_store)
     before = fresh_conn.execute(

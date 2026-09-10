@@ -96,6 +96,60 @@ def test_supplier_drafts_roundtrip_and_send(client):
     assert client.post(f"/supplier-quote-requests/{ids[0]}/send", json={}).status_code == 409
 
 
+def test_shared_enquiry_draft_and_multi_send(client):
+    drafted = client.post("/process-email", json=ENQUIRY).json()
+    tid = drafted["email_thread_id"]
+
+    got = client.get(f"/enquiry/{tid}/supplier-drafts").json()
+    # one shared draft, {{supplier_name}} left as a live placeholder, no price
+    ed = got["enquiry_draft"]
+    assert ed and ed["subject"]
+    assert "{{supplier_name}}" in ed["body_template"]
+    keys = {f["key"] for f in ed["fields"]}
+    assert not any("price" in k for k in keys)
+    # matched-supplier checklist
+    ms = got["matched_suppliers"]
+    assert len(ms) == len(drafted["supplier_quote_request_ids"])
+    assert all(m["status"] in ("pending", "draft") for m in ms)
+    assert got["trace"][2]["detail"]  # names or count on the "matched" node
+
+    # edit the shared draft once
+    new_fields = [
+        {**f, "value": "7,500 pieces"} if f["key"] == "quantity" else f
+        for f in ed["fields"]
+    ]
+    r = client.patch(f"/enquiry/{tid}/draft",
+                     json={"draft_subject": "RFQ - bolts (edited)", "fields": new_fields})
+    assert r.status_code == 200
+    assert "7,500 pieces" in r.json()["body"]
+    assert r.json()["subject"] == "RFQ - bolts (edited)"
+
+    # send to a subset in one call
+    first_id = ms[0]["supplier_id"]
+    sent = client.post(f"/enquiry/{tid}/send", json={"supplier_ids": [first_id]})
+    assert sent.status_code == 200
+    payload = sent.json()
+    assert payload["status"] == "sent" and payload["transmitted"] is False
+    assert payload["newly_sent"] == [first_id]
+    assert payload["progress"] == {"sent": 1, "total": len(ms)}
+
+    again = client.get(f"/enquiry/{tid}/supplier-drafts").json()
+    sent_row = next(m for m in again["matched_suppliers"] if m["supplier_id"] == first_id)
+    assert sent_row["status"] == "sent" and sent_row["sent_at"]
+    # the sent snapshot carries the edited quantity and this supplier's name
+    d = next(x for x in again["supplier_drafts"] if x["supplier_id"] == first_id)
+    assert "7,500 pieces" in d["draft_body"]
+    assert "{{supplier_name}}" not in d["draft_body"]
+
+    # empty / bad selection is a 400
+    assert client.post(f"/enquiry/{tid}/send", json={"supplier_ids": []}).status_code == 400
+
+
+def test_send_endpoint_unknown_enquiry_404(client):
+    assert client.post("/enquiry/999999/send", json={"supplier_ids": [1]}).status_code == 404
+    assert client.patch("/enquiry/999999/draft", json={"draft_subject": "x"}).status_code == 404
+
+
 def test_patch_persists_edits(client):
     drafted = client.post("/process-email", json=ENQUIRY).json()
     sqr_id = drafted["supplier_quote_request_ids"][0]

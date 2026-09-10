@@ -13,6 +13,8 @@ import zlib
 from datetime import UTC, datetime
 from email.utils import parseaddr
 
+from gmail_trigger_poc.llm import render_body, substitute
+
 logger = logging.getLogger(__name__)
 
 
@@ -90,6 +92,76 @@ def find_thread_by_message_id(
     return conn.execute(
         "SELECT * FROM email_threads WHERE gmail_message_id = ?", (gmail_message_id,)
     ).fetchone()
+
+
+def create_received_thread(
+    email_data: dict, conn: sqlite3.Connection, *, broker_email: str
+) -> int:
+    """Insert the inbound row the instant an email lands — before classify/extract.
+
+    Born 'new' / 'received' with no `extracted_data_json` yet, so the Desk shows
+    "Enquiry received" in real time. `attach_extraction` fills the parsed fields
+    and moves it to 'processing' / 'extracted' (or 'logged') once STEP 1 runs.
+    Idempotent on `gmail_message_id` (UNIQUE): a redelivery returns the same id.
+    """
+    gmail_message_id = email_data.get("id")
+    existing = find_thread_by_message_id(gmail_message_id, conn)
+    if existing:
+        return existing["id"]
+
+    gmail_thread_id = email_data.get("gmail_thread_id") or email_data.get("thread_id")
+    thread_id = derive_thread_id(
+        str(gmail_thread_id) if gmail_thread_id else None, gmail_message_id
+    )
+    try:
+        cur = conn.execute(
+            """
+            INSERT INTO email_threads
+                (gmail_message_id, thread_id, gmail_thread_id, from_email, to_email, subject,
+                 body_text, direction, processed_at, status, pipeline_stage, pipeline_updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 'inbound', ?, 'new', 'received', ?)
+            """,
+            (
+                gmail_message_id,
+                thread_id,
+                str(gmail_thread_id) if gmail_thread_id else None,
+                bare_email(email_data.get("from")),
+                bare_email(email_data.get("to")) or broker_email,
+                email_data.get("subject"),
+                email_data.get("body"),
+                _now(),
+                _now(),
+            ),
+        )
+    except sqlite3.IntegrityError:
+        raced = find_thread_by_message_id(gmail_message_id, conn)
+        if raced is None:
+            raise
+        return raced["id"]
+    logger.info("email_threads row id=%s (thread_id=%s) status=new stage=received",
+                cur.lastrowid, thread_id)
+    return int(cur.lastrowid)
+
+
+def attach_extraction(
+    email_thread_id: int,
+    extraction,
+    conn: sqlite3.Connection,
+    *,
+    status: str = "processing",
+    pipeline_stage: str = "extracted",
+    commit: bool = True,
+) -> None:
+    """Land the classify+extract result on a row created by `create_received_thread`."""
+    conn.execute(
+        "UPDATE email_threads SET extracted_data_json = ?, status = ?, "
+        "pipeline_stage = ?, pipeline_updated_at = ? WHERE id = ?",
+        (json.dumps(extraction.as_dict()), status, pipeline_stage, _now(), email_thread_id),
+    )
+    if commit:
+        conn.commit()
+    logger.info("email_thread id=%s extraction attached (scenario=%s status=%s)",
+                email_thread_id, extraction.scenario, status)
 
 
 def insert_inbound_thread(
@@ -194,6 +266,179 @@ def draft_progress(email_thread_id: int, conn: sqlite3.Connection) -> dict:
     ).fetchone()
     total = row["drafts_total"] if row and row["drafts_total"] is not None else done
     return {"done": done, "total": max(total, done)}
+
+
+_MATCHED_KEYS = ("supplier_id", "supplier_name", "supplier_email", "match_score")
+
+
+def set_matched_suppliers(
+    email_thread_id: int, candidates: list[dict], conn: sqlite3.Connection, *, commit: bool = True
+) -> None:
+    """Snapshot who cleared the match threshold, so the trace can name them
+    after a page refresh (not only on the live WebSocket tick)."""
+    slim = [{k: c.get(k) for k in _MATCHED_KEYS} for c in candidates]
+    conn.execute(
+        "UPDATE email_threads SET matched_suppliers_json = ? WHERE id = ?",
+        (json.dumps(slim), email_thread_id),
+    )
+    if commit:
+        conn.commit()
+
+
+def get_matched_suppliers(email_thread_id: int, conn: sqlite3.Connection) -> list[dict]:
+    row = conn.execute(
+        "SELECT matched_suppliers_json FROM email_threads WHERE id = ?", (email_thread_id,)
+    ).fetchone()
+    if not row or not row["matched_suppliers_json"]:
+        return []
+    try:
+        data = json.loads(row["matched_suppliers_json"])
+        return data if isinstance(data, list) else []
+    except (json.JSONDecodeError, TypeError):
+        return []
+
+
+# --------------------------------------------------------------------------- #
+# shared enquiry outreach draft (one editable email per enquiry)
+# --------------------------------------------------------------------------- #
+
+
+def set_enquiry_draft(
+    email_thread_id: int,
+    draft: dict,
+    conn: sqlite3.Connection,
+    *,
+    edit_mode: str = "fields",
+    commit: bool = True,
+) -> None:
+    """Store the one shared outreach draft (subject / {{token}} template / fields)
+    on the enquiry row. `draft` is the shape llm.draft_shared_outreach returns."""
+    conn.execute(
+        "UPDATE email_threads SET draft_subject = ?, draft_body_template = ?, "
+        "draft_fields_json = ?, draft_edit_mode = ? WHERE id = ?",
+        (
+            draft.get("subject") or "",
+            draft.get("body_template") or "",
+            json.dumps(draft.get("fields") or []),
+            edit_mode,
+            email_thread_id,
+        ),
+    )
+    if commit:
+        conn.commit()
+
+
+def get_enquiry_draft(email_thread_id: int, conn: sqlite3.Connection) -> dict | None:
+    """The shared draft as the UI needs it: subject, raw template, parsed fields,
+    edit mode, and the rendered `body` ({{field}}s filled, {{supplier_name}} left
+    as a visible placeholder)."""
+    row = conn.execute(
+        "SELECT draft_subject, draft_body_template, draft_fields_json, draft_edit_mode "
+        "FROM email_threads WHERE id = ?",
+        (email_thread_id,),
+    ).fetchone()
+    if row is None or row["draft_body_template"] is None:
+        return None
+    try:
+        fields = json.loads(row["draft_fields_json"] or "[]")
+    except (json.JSONDecodeError, TypeError):
+        fields = []
+    template = row["draft_body_template"] or ""
+    mode = row["draft_edit_mode"] or "fields"
+    body = template if mode == "free_text" else render_body(template, fields)
+    return {
+        "subject": row["draft_subject"] or "",
+        "body_template": template,
+        "fields": fields,
+        "edit_mode": mode,
+        "body": body,
+    }
+
+
+_ENQUIRY_DRAFT_COLS = {
+    "draft_subject": "draft_subject",
+    "draft_body": "draft_body_template",  # free-text body is stored as the template
+    "draft_edit_mode": "draft_edit_mode",
+}
+
+
+def apply_enquiry_draft_edits(
+    email_thread_id: int, edits: dict, conn: sqlite3.Connection
+) -> dict | None:
+    """Persist operator edits to the shared draft. Keys: draft_subject,
+    draft_body (free-text mode — stored as the template verbatim), draft_edit_mode,
+    fields (list). Mirrors apply_draft_edits but on the email_threads row."""
+    current = get_enquiry_draft(email_thread_id, conn)
+    if current is None:
+        return None
+
+    sets: list[str] = []
+    params: list = []
+    for key, col in _ENQUIRY_DRAFT_COLS.items():
+        if key in edits and edits[key] is not None:
+            sets.append(f"{col} = ?")
+            params.append(edits[key])
+
+    if edits.get("fields") is not None:
+        sets.append("draft_fields_json = ?")
+        params.append(json.dumps(edits["fields"]))
+
+    if not sets:
+        return current
+    conn.execute(
+        f"UPDATE email_threads SET {', '.join(sets)} WHERE id = ?",
+        [*params, email_thread_id],
+    )
+    conn.commit()
+    return get_enquiry_draft(email_thread_id, conn)
+
+
+def render_for_supplier(template: str, fields: list[dict], supplier_name: str) -> str:
+    """Shared template -> the concrete text one supplier receives: {{supplier_name}}
+    filled in, then every {{field}} rendered."""
+    return render_body(substitute(template, {"supplier_name": supplier_name or "team"}), fields)
+
+
+def send_enquiry_to_suppliers(
+    email_thread_id: int, supplier_ids: list[int], conn: sqlite3.Connection
+) -> dict:
+    """Mark the shared draft sent to each selected supplier (mark-only — no
+    gmail.send). Snapshots the exact per-supplier text onto that supplier's
+    supplier_quote_requests row. Returns {sent, total, newly_sent:[...]}. """
+    draft = get_enquiry_draft(email_thread_id, conn)
+    rows = conn.execute(
+        """
+        SELECT sqr.id, sqr.supplier_id, sqr.status, s.name AS supplier_name
+        FROM supplier_quote_requests sqr JOIN suppliers s ON s.id = sqr.supplier_id
+        WHERE sqr.email_thread_id = ?
+        """,
+        (email_thread_id,),
+    ).fetchall()
+    want = set(supplier_ids)
+    newly_sent: list[int] = []
+    for r in rows:
+        if r["supplier_id"] not in want or r["status"] == "sent":
+            continue
+        body = (
+            render_for_supplier(draft["body_template"], draft["fields"], r["supplier_name"])
+            if draft
+            else None
+        )
+        if body is not None:
+            conn.execute(
+                "UPDATE supplier_quote_requests SET draft_subject = ?, draft_body = ?, "
+                "status = 'sent', sent_at = ? WHERE id = ?",
+                (draft["subject"], body, _now(), r["id"]),
+            )
+        else:
+            conn.execute(
+                "UPDATE supplier_quote_requests SET status = 'sent', sent_at = ? WHERE id = ?",
+                (_now(), r["id"]),
+            )
+        newly_sent.append(r["supplier_id"])
+    conn.commit()
+    progress = enquiry_progress(email_thread_id, conn)
+    return {**progress, "newly_sent": newly_sent}
 
 
 def finalize_thread_status(
@@ -390,13 +635,19 @@ def enquiry_progress(email_thread_id: int, conn: sqlite3.Connection) -> dict:
     return {"sent": sent, "total": total}
 
 
-def build_thread_trace(thread_row, sent_progress: dict, draft_prog: dict | None = None) -> list[dict]:
+def build_thread_trace(
+    thread_row,
+    sent_progress: dict,
+    draft_prog: dict | None = None,
+    matched_names: list[str] | None = None,
+) -> list[dict]:
     """The processing trace for the detail pane (plans/v2SQ-quoteflow-ui.html).
 
     5 nodes: received -> extracted -> suppliers matched -> drafts generated
     (per-supplier, live) -> all sent. A node is `done` once the enquiry has
     reached at least that stage; the drafting node also carries "N of M" while
-    it's in flight.
+    it's in flight. `matched_names`, when given, names the suppliers on the
+    "matched" node instead of just counting them.
     """
     stage = (thread_row["pipeline_stage"] if "pipeline_stage" in thread_row.keys() else None)
     status = (thread_row["status"] if "status" in thread_row.keys() else None)
@@ -420,8 +671,11 @@ def build_thread_trace(thread_row, sent_progress: dict, draft_prog: dict | None 
         {"key": "extracted", "label": "Content extracted", "done": reached >= 1,
          "detail": "Product, quantity and delivery window parsed" if reached >= 1 else None},
         {"key": "matched", "label": "Suppliers matched", "done": reached >= i_matched,
-         "detail": (f"{d_total} supplier(s) cleared the match threshold"
-                    if d_total else "Matching suppliers") if reached >= i_matched else None},
+         "detail": (
+             (", ".join(matched_names) if matched_names
+              else f"{d_total} supplier(s) cleared the match threshold"
+              if d_total else "Matching suppliers")
+         ) if reached >= i_matched else None},
     ]
 
     # The drafting node: pending -> in-progress ("2 of 3") -> done.

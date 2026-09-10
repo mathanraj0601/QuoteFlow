@@ -134,7 +134,8 @@ def load_demo(settings: Settings | None = None, conn=None) -> dict[str, int]:
     at once. IDs are in a 9000+ block; `INSERT OR IGNORE` makes this re-runnable.
     Needs the main seed loaded first (it references seed client/supplier/product ids).
     """
-    from gmail_trigger_poc.llm import render_body
+    from gmail_trigger_poc.repository import render_for_supplier
+    from gmail_trigger_poc.llm import substitute
 
     settings = settings or get_settings()
     demo_path = Path(settings.demo_file)
@@ -167,7 +168,37 @@ def load_demo(settings: Settings | None = None, conn=None) -> dict[str, int]:
                 ),
             )
             seen["email_threads"] += 1
-            for d in enq.get("supplier_drafts", []):
+
+            drafts = enq.get("supplier_drafts", [])
+            if drafts:
+                # v2SQ: one shared outreach draft on the enquiry row; the
+                # supplier_quote_requests rows are the per-supplier send records.
+                matched = []
+                for d in drafts:
+                    srow = conn.execute(
+                        "SELECT name, contact_email FROM suppliers WHERE id = ?",
+                        (d["supplier_id"],),
+                    ).fetchone()
+                    matched.append({
+                        "supplier_id": d["supplier_id"],
+                        "supplier_name": srow["name"] if srow else f"Supplier {d['supplier_id']}",
+                        "supplier_email": (srow["contact_email"] if srow else None) or d["draft_to"],
+                        "match_score": d.get("match_score"),
+                    })
+                shared_fields = drafts[0]["fields"]
+                conn.execute(
+                    "UPDATE email_threads SET matched_suppliers_json = ?, draft_subject = ?, "
+                    "draft_body_template = ?, draft_fields_json = ?, draft_edit_mode = 'fields', "
+                    "drafts_total = ? WHERE id = ?",
+                    (
+                        json.dumps(matched), drafts[0]["draft_subject"], template,
+                        json.dumps(shared_fields), len(drafts), enq["id"],
+                    ),
+                )
+
+            for d in drafts:
+                sname = next((m["supplier_name"] for m in matched
+                              if m["supplier_id"] == d["supplier_id"]), "team")
                 conn.execute(
                     """
                     INSERT OR IGNORE INTO supplier_quote_requests
@@ -181,8 +212,8 @@ def load_demo(settings: Settings | None = None, conn=None) -> dict[str, int]:
                         d["id"], enq["id"], enq["client_id"], d["supplier_id"],
                         d["product_id"], d.get("quantity"), d.get("specs_summary"),
                         d.get("match_score"), d["draft_to"], d["draft_subject"],
-                        render_body(template, d["fields"]),
-                        template, json.dumps(d["fields"]),
+                        render_for_supplier(template, d["fields"], sname),
+                        substitute(template, {"supplier_name": sname}), json.dumps(d["fields"]),
                         d["status"], enq["processed_at"], d.get("sent_at"),
                     ),
                 )

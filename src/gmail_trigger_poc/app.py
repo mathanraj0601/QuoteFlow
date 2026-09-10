@@ -239,6 +239,36 @@ def list_enquiries(include_all: bool = False) -> dict:
     return {"count": len(enquiries), "enquiries": enquiries}
 
 
+def _matched_suppliers_view(thread_id: int, conn) -> list[dict]:
+    """Matched suppliers + their per-supplier send state, for the checklist UI."""
+    matched = repository.get_matched_suppliers(thread_id, conn)
+    records = {
+        d["supplier_id"]: d
+        for d in repository.list_supplier_drafts(thread_id, conn)
+    }
+    out = []
+    for m in matched:
+        rec = records.get(m.get("supplier_id"), {})
+        out.append({
+            "supplier_id": m.get("supplier_id"),
+            "name": m.get("supplier_name") or rec.get("supplier_name"),
+            "email": m.get("supplier_email") or rec.get("draft_to"),
+            "match_score": m.get("match_score") or rec.get("match_score"),
+            "sqr_id": rec.get("id"),
+            "status": rec.get("status") or "pending",
+            "sent_at": rec.get("sent_at"),
+        })
+    # fall back to the send records themselves if we have no snapshot (pre-migration row)
+    if not out:
+        for d in records.values():
+            out.append({
+                "supplier_id": d["supplier_id"], "name": d["supplier_name"],
+                "email": d["draft_to"], "match_score": d["match_score"],
+                "sqr_id": d["id"], "status": d["status"], "sent_at": d.get("sent_at"),
+            })
+    return out
+
+
 @app.get("/enquiry/{thread_id}/supplier-drafts")
 def enquiry_supplier_drafts(thread_id: int) -> dict:
     """Everything the Supplier Outreach Builder needs for one enquiry (Plan B §6)."""
@@ -248,7 +278,13 @@ def enquiry_supplier_drafts(thread_id: int) -> dict:
         drafts = repository.list_supplier_drafts(thread_id, conn)
         sent_progress = repository.enquiry_progress(thread_id, conn)
         draft_prog = repository.draft_progress(thread_id, conn)
-        trace = repository.build_thread_trace(thread_row, sent_progress, draft_prog)
+        matched = repository.get_matched_suppliers(thread_id, conn)
+        matched_names = [m.get("supplier_name") for m in matched if m.get("supplier_name")]
+        trace = repository.build_thread_trace(
+            thread_row, sent_progress, draft_prog, matched_names or None
+        )
+        enquiry_draft = repository.get_enquiry_draft(thread_id, conn)
+        matched_suppliers = _matched_suppliers_view(thread_id, conn)
     return {
         "email_thread_id": thread_id,
         "status": thread.get("status") or ("drafted" if drafts else "logged"),
@@ -262,8 +298,50 @@ def enquiry_supplier_drafts(thread_id: int) -> dict:
             "body": thread["body_text"],
             "extracted": json.loads(thread.get("extracted_data_json") or "null"),
         },
+        "enquiry_draft": enquiry_draft,
+        "matched_suppliers": matched_suppliers,
         "supplier_drafts": drafts,
     }
+
+
+@app.patch("/enquiry/{thread_id}/draft")
+def update_enquiry_draft(thread_id: int, patch: dict = Body(default_factory=dict)) -> dict:
+    """Persist operator edits to the ONE shared outreach draft (subject / body /
+    fields / edit mode). Editing `fields` in 'fields' mode re-renders the body
+    from the template on read."""
+    edits = _validated_edits(patch)
+    if not edits:
+        raise HTTPException(status_code=400, detail="no updatable fields in body")
+    with _db() as conn:
+        _thread_row(thread_id, conn)  # 404 if the enquiry doesn't exist
+        updated = repository.apply_enquiry_draft_edits(thread_id, edits, conn)
+    if updated is None:
+        raise HTTPException(status_code=404, detail=f"enquiry {thread_id} has no shared draft yet")
+    progress.emit("draft_updated", email_thread_id=thread_id)
+    return updated
+
+
+@app.post("/enquiry/{thread_id}/send")
+def send_enquiry(thread_id: int, payload: dict = Body(default_factory=dict)) -> dict:
+    """Send the shared draft to the selected matched suppliers in one action
+    (mark-only — no gmail.send). `payload = {"supplier_ids": [1, 2, ...]}`."""
+    s = get_settings()
+    ids = payload.get("supplier_ids")
+    if not isinstance(ids, list) or not ids or not all(isinstance(i, int) for i in ids):
+        raise HTTPException(status_code=400, detail="supplier_ids must be a non-empty list of ints")
+    with _db() as conn:
+        _thread_row(thread_id, conn)
+        if repository.get_enquiry_draft(thread_id, conn) is None:
+            raise HTTPException(status_code=409, detail="no shared draft to send for this enquiry")
+        result = repository.send_enquiry_to_suppliers(thread_id, ids, conn)
+    logger.info(
+        "SEND (mark-only) enquiry #%s -> suppliers %s  (%d/%d sent)  scopes=%s",
+        thread_id, result["newly_sent"], result["sent"], result["total"], s.scopes,
+    )
+    progress.emit("draft_sent", email_thread_id=thread_id,
+                  sent=result["sent"], total=result["total"], newly_sent=result["newly_sent"])
+    return {"status": "sent", "transmitted": False, **result,
+            "progress": {"sent": result["sent"], "total": result["total"]}}
 
 
 _PATCHABLE = {"draft_to", "draft_subject", "draft_body", "draft_edit_mode", "fields"}

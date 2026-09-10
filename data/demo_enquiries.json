@@ -1,8 +1,6 @@
 {
   "_comment": "Demo overlay for walkthroughs / meetings. Load with `python -m gmail_trigger_poc.seed --demo` (runs a normal seed first, then lays these on top). Six client enquiries frozen at different v2SQ lifecycle stages so the Desk shows New / Processing / Drafted / all-sent side by side. IDs live in a 9000+ block so they never collide with the main seed. Purge with: DELETE FROM supplier_quote_requests WHERE id >= 9000; DELETE FROM email_threads WHERE id >= 9000;",
-
-  "body_template": "Hi team,\n\nWe're sourcing {{product}} for a client and your listing came up as a strong match.\n\nQuantity requested: {{quantity}}\nReference unit price: {{unit_price}}\nRequested delivery: {{delivery}}\n\nCould you confirm current pricing, MOQ and lead time? This may become a recurring order if the terms work out.\n\nThanks,\nMeridian Trade Partners — Sourcing",
-
+  "body_template": "Hi {{supplier_name}} team,\n\nWe're sourcing {{product}} for a client and your listing came up as a strong match.\n\nQuantity requested: {{quantity}}\nRequested delivery: {{delivery}}\n\nCould you confirm current pricing, MOQ and lead time? This may become a recurring order if the terms work out.\n\nThanks,\nMeridian Trade Partners — Sourcing",
   "enquiries": [
     {
       "id": 9001,
@@ -116,10 +114,24 @@
           "status": "sent",
           "sent_at": "2026-09-10 06:35:00",
           "fields": [
-            {"key": "product", "label": "Product", "value": "organic cotton canvas (mid-weight, undyed)", "tag": "AI-GENERATED"},
-            {"key": "quantity", "label": "Quantity requested", "value": "800 m", "tag": "AI-GENERATED"},
-            {"key": "unit_price", "label": "Reference unit price", "value": "$4.35 / m", "tag": "FROM-DATABASE"},
-            {"key": "delivery", "label": "Requested delivery", "value": "3 weeks, FOB Rotterdam", "tag": "MANUAL"}
+            {
+              "key": "product",
+              "label": "Product",
+              "value": "organic cotton canvas (mid-weight, undyed)",
+              "tag": "AI-GENERATED"
+            },
+            {
+              "key": "quantity",
+              "label": "Quantity requested",
+              "value": "800 m",
+              "tag": "AI-GENERATED"
+            },
+            {
+              "key": "delivery",
+              "label": "Requested delivery",
+              "value": "3 weeks, FOB Rotterdam",
+              "tag": "MANUAL"
+            }
           ]
         },
         {
@@ -134,10 +146,24 @@
           "status": "draft",
           "sent_at": null,
           "fields": [
-            {"key": "product", "label": "Product", "value": "organic cotton canvas (mid-weight, undyed)", "tag": "AI-GENERATED"},
-            {"key": "quantity", "label": "Quantity requested", "value": "800 m", "tag": "AI-GENERATED"},
-            {"key": "unit_price", "label": "Reference unit price", "value": "$4.60 / m", "tag": "FROM-DATABASE"},
-            {"key": "delivery", "label": "Requested delivery", "value": "GOTS certificate required", "tag": "NEEDS-REVIEW"}
+            {
+              "key": "product",
+              "label": "Product",
+              "value": "organic cotton canvas (mid-weight, undyed)",
+              "tag": "AI-GENERATED"
+            },
+            {
+              "key": "quantity",
+              "label": "Quantity requested",
+              "value": "800 m",
+              "tag": "AI-GENERATED"
+            },
+            {
+              "key": "delivery",
+              "label": "Requested delivery",
+              "value": "GOTS certificate required",
+              "tag": "NEEDS-REVIEW"
+            }
           ]
         }
       ]
@@ -178,10 +204,24 @@
           "status": "sent",
           "sent_at": "2026-09-09 15:44:00",
           "fields": [
-            {"key": "product", "label": "Product", "value": "3-pin PCB connectors", "tag": "AI-GENERATED"},
-            {"key": "quantity", "label": "Quantity requested", "value": "20,000 units", "tag": "AI-GENERATED"},
-            {"key": "unit_price", "label": "Reference unit price", "value": "$0.42 / unit", "tag": "FROM-DATABASE"},
-            {"key": "delivery", "label": "Requested delivery", "value": "2 weeks, FOB Shenzhen", "tag": "MANUAL"}
+            {
+              "key": "product",
+              "label": "Product",
+              "value": "3-pin PCB connectors",
+              "tag": "AI-GENERATED"
+            },
+            {
+              "key": "quantity",
+              "label": "Quantity requested",
+              "value": "20,000 units",
+              "tag": "AI-GENERATED"
+            },
+            {
+              "key": "delivery",
+              "label": "Requested delivery",
+              "value": "2 weeks, FOB Shenzhen",
+              "tag": "MANUAL"
+            }
           ]
         },
         {
@@ -196,10 +236,24 @@
           "status": "sent",
           "sent_at": "2026-09-09 15:47:00",
           "fields": [
-            {"key": "product", "label": "Product", "value": "3-pin PCB connectors", "tag": "AI-GENERATED"},
-            {"key": "quantity", "label": "Quantity requested", "value": "20,000 units", "tag": "AI-GENERATED"},
-            {"key": "unit_price", "label": "Reference unit price", "value": "$0.45 / unit", "tag": "FROM-DATABASE"},
-            {"key": "delivery", "label": "Requested delivery", "value": "2 weeks, FOB Shenzhen", "tag": "MANUAL"}
+            {
+              "key": "product",
+              "label": "Product",
+              "value": "3-pin PCB connectors",
+              "tag": "AI-GENERATED"
+            },
+            {
+              "key": "quantity",
+              "label": "Quantity requested",
+              "value": "20,000 units",
+              "tag": "AI-GENERATED"
+            },
+            {
+              "key": "delivery",
+              "label": "Requested delivery",
+              "value": "2 weeks, FOB Shenzhen",
+              "tag": "MANUAL"
+            }
           ]
         }
       ]

@@ -88,6 +88,10 @@ class Provider(Protocol):
         self, enquiry: Extraction, candidate: dict, settings: Settings
     ) -> dict: ...
 
+    def draft_shared_outreach(
+        self, enquiry: Extraction, context: dict, settings: Settings
+    ) -> dict: ...
+
 
 # --------------------------------------------------------------------------- #
 # Stub provider
@@ -295,6 +299,64 @@ class StubProvider:
             "body": render_body(body_template, fields),
         }
 
+    def draft_shared_outreach(
+        self, enquiry: Extraction, context: dict, settings: Settings
+    ) -> dict:
+        """One template for ALL matched suppliers: {{supplier_name}} stays a live
+        token (filled per recipient at send), and there is NO price line/field."""
+        uom = enquiry.unit_of_measure or context.get("unit_of_measure") or "unit"
+        qty_val = f"{enquiry.quantity:,} {uom}" if enquiry.quantity else "(quantity to confirm)"
+        specs_val = _first(
+            enquiry.specifications, context.get("product_specifications")
+        ) or "(as per client enquiry)"
+        delivery_val = " / ".join(
+            p for p in (enquiry.delivery_terms, enquiry.destination) if p
+        ) or "(delivery terms to confirm)"
+
+        fields = [
+            {"key": "quantity", "label": "Quantity requested", "value": qty_val,
+             "tag": "AI-GENERATED" if enquiry.quantity else "NEEDS-REVIEW",
+             "confidence": 0.9 if enquiry.quantity else 0.3},
+            {"key": "specifications", "label": "Specifications", "value": specs_val,
+             "tag": "AI-GENERATED" if enquiry.specifications else "FROM-DATABASE",
+             "confidence": 0.7 if enquiry.specifications else None},
+            {"key": "delivery", "label": "Requested delivery", "value": delivery_val,
+             "tag": "AI-GENERATED" if (enquiry.delivery_terms or enquiry.destination)
+             else "NEEDS-REVIEW",
+             "confidence": 0.7 if (enquiry.delivery_terms or enquiry.destination) else 0.3},
+            {"key": "lead_time", "label": "Requested lead time", "value": "(please advise)",
+             "tag": "NEEDS-REVIEW", "confidence": 0.3},
+        ]
+
+        product_name = context.get("product_name") or enquiry.product_description
+        fixed = {
+            "product_name": product_name,
+            "broker_name": settings.broker_name,
+            "broker_email": settings.broker_email,
+        }
+        body_template = substitute(
+            "Hi {{supplier_name}} team,\n\n"
+            "We have a client enquiry that matches your catalogue and would like your "
+            "best quotation.\n\n"
+            "- Product: {{product_name}}\n"
+            "- Specifications: {{specifications}}\n"
+            "- Quantity requested: {{quantity}}\n"
+            "- Requested delivery: {{delivery}}\n"
+            "- Requested lead time: {{lead_time}}\n\n"
+            "Please confirm your current unit pricing, MOQ, shipping cost, lead time and "
+            "any applicable certifications for this requirement.\n\n"
+            "Best regards,\n{{broker_name}}\n{{broker_email}}",
+            fixed,
+        )
+        qty_subject = f" - Qty {enquiry.quantity:,}" if enquiry.quantity else ""
+        return {
+            "to": "{{supplier_name}}",
+            "subject": f"RFQ - {product_name}{qty_subject}",
+            "body_template": body_template,
+            "fields": fields,
+            "body": render_body(body_template, fields),
+        }
+
 
 # --------------------------------------------------------------------------- #
 # Anthropic provider
@@ -335,6 +397,24 @@ based on a client enquiry and that supplier's catalogue row. Reply with ONE JSON
           NEEDS-REVIEW when a value is missing or uncertain.
 
 Do not invent prices. Ask the supplier to confirm pricing, MOQ, lead time, certifications."""
+
+_DRAFT_SHARED_SYSTEM = """You draft ONE quote-request email from a procurement broker that will be \
+sent to SEVERAL matched suppliers at once, based on a client enquiry. Reply with ONE JSON object only:
+
+  subject: string
+  body_template: string  - the email body. Address the supplier generically with the literal
+                           token {{supplier_name}} (it is filled in per recipient at send time) -
+                           do NOT name any one supplier. Use {{key}} tokens for every value the
+                           operator may edit; every such token MUST have a matching entry in
+                           "fields". {{product_name}}, {{broker_name}}, {{broker_email}} are
+                           filled by the system.
+  fields: array of { key, label, value, tag, confidence }
+          tag in "AI-GENERATED" | "FROM-DATABASE" | "NEEDS-REVIEW"
+          confidence: number 0..1 or null
+
+Allowed fields: quantity, specifications, delivery, lead_time. Do NOT include any reference /
+target / catalogue unit price - a line or a field - anywhere. Pricing is exactly what we are
+asking the suppliers to provide. Ask them to confirm pricing, MOQ, lead time, certifications."""
 
 
 def _extract_json(text: str) -> dict:
@@ -445,6 +525,45 @@ def _json_to_draft(
     }
 
 
+_PRICE_KEY_RE = re.compile(r"(unit[_ ]?price|target[_ ]?price|reference[_ ]?price|catalogue[_ ]?price)", re.I)
+
+
+def _json_to_shared_draft(data: dict, enquiry: Extraction, settings: Settings) -> dict:
+    """Map the shared-draft JSON to the stored shape. Keeps {{supplier_name}} live
+    (filled per recipient at send); strips any price field a model slipped in."""
+    fields = [f for f in _sanitize_fields(data.get("fields"))
+              if not _PRICE_KEY_RE.search(f["key"]) and not _PRICE_KEY_RE.search(f["label"])]
+    fixed = {
+        "product_name": enquiry.product_description or "the requirement",
+        "client_company": enquiry.client_company or "our client",
+        "client_name": enquiry.client_name or "our client",
+        "broker_name": settings.broker_name,
+        "broker_email": settings.broker_email,
+    }
+    template = str(data.get("body_template") or "")
+    # Fill the system tokens but NOT {{supplier_name}} / the field tokens.
+    body_template = substitute(template, fixed)
+    subject = str(data.get("subject") or f"RFQ - {fixed['product_name']}")
+    subject = render_body(substitute(subject, {**fixed, "supplier_name": ""}), fields)
+    return {
+        "to": "{{supplier_name}}",
+        "subject": subject,
+        "body_template": body_template,
+        "fields": fields,
+        "body": render_body(body_template, fields),
+    }
+
+
+def _shared_draft_user_prompt(enquiry: Extraction, context: dict, settings: Settings) -> str:
+    return (
+        "CLIENT ENQUIRY (extracted):\n"
+        f"{json.dumps(enquiry.as_dict(), indent=2)}\n\n"
+        "REPRESENTATIVE CATALOGUE PRODUCT (context only - the email goes to several suppliers):\n"
+        f"{json.dumps(context, indent=2, default=str)}\n\n"
+        f"Broker: {settings.broker_name} <{settings.broker_email}>"
+    )
+
+
 def _classify_user_prompt(email_data: dict) -> str:
     return (
         f"From: {email_data.get('from')}\n"
@@ -536,6 +655,15 @@ class AnthropicProvider:
             _DRAFT_SYSTEM, _draft_user_prompt(enquiry, candidate, settings), kind="draft outreach"
         )
         return _json_to_draft(data, enquiry, candidate, settings)
+
+    def draft_shared_outreach(
+        self, enquiry: Extraction, context: dict, settings: Settings
+    ) -> dict:
+        data = self._call(
+            _DRAFT_SHARED_SYSTEM, _shared_draft_user_prompt(enquiry, context, settings),
+            kind="draft shared outreach",
+        )
+        return _json_to_shared_draft(data, enquiry, settings)
 
 
 def _sanitize_fields(raw: Any) -> list[dict]:
@@ -639,6 +767,15 @@ class OllamaProvider:
             _DRAFT_SYSTEM, _draft_user_prompt(enquiry, candidate, settings), kind="draft outreach"
         )
         return _json_to_draft(data, enquiry, candidate, settings)
+
+    def draft_shared_outreach(
+        self, enquiry: Extraction, context: dict, settings: Settings
+    ) -> dict:
+        data = self._call(
+            _DRAFT_SHARED_SYSTEM, _shared_draft_user_prompt(enquiry, context, settings),
+            kind="draft shared outreach",
+        )
+        return _json_to_shared_draft(data, enquiry, settings)
 
 
 # --------------------------------------------------------------------------- #
