@@ -1,0 +1,636 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>QuoteFlow</title>
+<style>
+  :root{
+    --navy:#12233D; --navy-2:#1B3252;
+    --ink:#1A2333; --ink-soft:#6B7385; --ink-faint:#9AA1B0;
+    --bg:#FAFAFB; --paper:#FFFFFF; --line:#EEEFF3;
+    --brass:#B8823C; --brass-dark:#96682C; --brass-bg:#FBF1E1;
+    --green:#1E8A5F; --green-bg:#E4F5EC;
+    --red:#C24A3A; --red-bg:#FBEAE6;
+    --blue:#3B5FCC; --blue-bg:#E9EDFB;
+    --amber:#B07A1E; --amber-bg:#FBF0DA;
+    --sans:-apple-system,"SF Pro Text","Segoe UI",Helvetica,Arial,sans-serif;
+    --shadow-sm: 0 1px 2px rgba(15,23,42,.04);
+    --shadow: 0 1px 2px rgba(15,23,42,.03), 0 10px 28px rgba(15,23,42,.07);
+  }
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent;}
+  html,body{margin:0;height:100%;}
+  body{font-family:var(--sans);background:var(--bg);color:var(--ink);max-width:430px;margin:0 auto;min-height:100vh;}
+
+  .proto-nav{display:flex;gap:6px;background:var(--navy);padding:8px 10px;}
+  .proto-nav button{background:none;border:1px solid #2A3C58;color:#8FA0BC;font-size:10.5px;padding:6px 10px;border-radius:20px;cursor:pointer;font-family:var(--sans);}
+  .proto-nav button.active{background:var(--brass);border-color:var(--brass);color:#241705;font-weight:700;}
+
+  .screen{display:none;}
+  .screen.is-active{display:block;}
+
+  .mark{width:30px;height:30px;border-radius:9px;background:var(--navy);display:flex;align-items:center;justify-content:center;flex-shrink:0;}
+  .mark span{color:var(--brass);font-weight:800;font-size:14px;}
+  .wordmark{font-weight:700;font-size:16px;color:var(--ink);letter-spacing:-.01em;}
+
+  /* ---------- LOGIN ---------- */
+  .login-shell{min-height:100vh;background:var(--paper);}
+  .login-brand{display:none;}
+  .login-form-wrap{min-height:100vh;display:flex;flex-direction:column;justify-content:center;padding:40px 26px;}
+  .brandrow{display:flex;align-items:center;gap:9px;justify-content:center;margin-bottom:34px;}
+  .login-title{text-align:center;margin-bottom:30px;}
+  .login-title h1{font-size:22px;font-weight:800;margin:0 0 6px;color:var(--ink);letter-spacing:-.02em;}
+  .login-title p{font-size:13px;color:var(--ink-soft);margin:0;line-height:1.5;}
+  .field-group{margin-bottom:13px;}
+  .field-group label{display:block;font-size:11.5px;color:var(--ink-soft);margin-bottom:6px;font-weight:600;}
+  .field-group input{width:100%;padding:13px 14px;border:1.5px solid var(--line);border-radius:11px;font-size:15px;background:#FCFCFD;color:var(--ink);font-family:var(--sans);}
+  .field-group input:focus{outline:none;border-color:var(--navy);background:var(--paper);}
+  .forgot{text-align:right;margin:-4px 0 20px;}
+  .forgot a{font-size:12px;color:var(--ink-soft);text-decoration:none;}
+  .btn-primary{background:var(--navy);color:#fff;border:none;font-size:14.5px;padding:14px;border-radius:11px;cursor:pointer;width:100%;font-weight:700;font-family:var(--sans);}
+  .btn-primary:active{background:var(--navy-2);}
+  .demo-link{text-align:center;margin-top:16px;}
+  .demo-link a{font-size:12.5px;color:var(--brass-dark);text-decoration:none;font-weight:700;cursor:pointer;}
+  .login-foot{text-align:center;margin-top:44px;font-size:10.5px;color:var(--ink-faint);}
+  .login-form-inner{width:100%;max-width:320px;margin:0 auto;}
+
+  /* ---------- APP SHELL ---------- */
+  .app-shell{min-height:100vh;}
+  .desk-pane{display:block;}
+  .detail-pane{display:none;}
+  body.detail-open .desk-pane{display:none;}
+  body.detail-open .detail-pane{display:block;}
+
+  .app-top{padding:20px 20px 4px;display:flex;align-items:center;justify-content:space-between;}
+  .greet-sm{font-size:12px;color:var(--ink-soft);font-weight:500;margin-bottom:2px;}
+  .greet-lg{font-size:20px;font-weight:800;color:var(--ink);letter-spacing:-.01em;}
+  .avatar{width:36px;height:36px;border-radius:11px;background:var(--navy);color:var(--brass);font-size:12px;font-weight:800;display:flex;align-items:center;justify-content:center;}
+  .app-body{padding:0 20px 40px;}
+
+  /* combined stat + filter row */
+  .stat-row{display:flex;gap:9px;overflow-x:auto;padding:16px 20px 18px;}
+  .stat-chip{flex-shrink:0;min-width:92px;background:var(--paper);border-radius:14px;padding:11px 13px;box-shadow:var(--shadow);cursor:pointer;border:1.5px solid transparent;}
+  .stat-chip .lbl{font-size:10.5px;color:var(--ink-soft);font-weight:700;margin-bottom:5px;}
+  .stat-chip .val{font-size:18px;font-weight:800;color:var(--ink);letter-spacing:-.02em;}
+  .stat-chip.active{background:var(--navy);border-color:var(--navy);}
+  .stat-chip.active .lbl{color:#93A2BC;}
+  .stat-chip.active .val{color:#fff;}
+
+  .deal-card{background:var(--paper);border-radius:16px;padding:15px;margin-bottom:11px;box-shadow:var(--shadow);cursor:pointer;}
+  .deal-card.selected{outline:2px solid var(--brass);}
+  .deal-top{display:flex;justify-content:space-between;align-items:flex-start;gap:10px;}
+  .deal-who{display:flex;gap:10px;align-items:center;}
+  .av{width:38px;height:38px;border-radius:11px;display:flex;align-items:center;justify-content:center;font-size:12.5px;font-weight:800;flex-shrink:0;}
+  .av-1{background:#E4ECFB;color:#3B5FCC;} .av-2{background:#E4F5EC;color:#1E8A5F;}
+  .av-3{background:#FBF0DA;color:#B07A1E;} .av-4{background:#F3E7FB;color:#7A3FBF;}
+  .av-5{background:#FBEAE6;color:#C24A3A;} .av-6{background:#DEF3F1;color:#1B8A82;}
+  .deal-client{font-size:14.5px;font-weight:700;color:var(--ink);}
+  .deal-cat{font-size:11px;color:var(--ink-faint);margin-top:1px;}
+  .pill{font-size:10px;font-weight:700;padding:4px 10px;border-radius:20px;white-space:nowrap;}
+  .pill.new{color:var(--blue);background:var(--blue-bg);}
+  .pill.processing{color:var(--amber);background:var(--amber-bg);}
+  .pill.drafted{color:var(--green);background:var(--green-bg);}
+  .pill.sent{color:var(--ink-soft);background:var(--line);}
+  .deal-subject{font-size:12.5px;color:var(--ink-soft);line-height:1.5;margin:11px 0 10px;}
+  .deal-foot{display:flex;justify-content:space-between;align-items:center;font-size:10.5px;color:var(--ink-faint);padding-top:10px;border-top:1px solid var(--line);}
+
+  /* ---------- DETAIL PANE ---------- */
+  .back-row{display:flex;align-items:center;gap:8px;padding:18px 20px 4px;}
+  .back-row .back{font-size:13px;color:var(--ink-soft);font-weight:600;cursor:pointer;}
+  .detail-empty{display:none;padding:80px 30px;text-align:center;color:var(--ink-faint);font-size:13px;}
+  .detail-body{padding:0 0 40px;}
+
+  .proc-hero{margin:16px 20px 0;background:var(--paper);border-radius:18px;box-shadow:var(--shadow);padding:20px;display:flex;align-items:center;gap:18px;}
+  .ring{width:76px;height:76px;border-radius:50%;display:flex;align-items:center;justify-content:center;flex-shrink:0;}
+  .ring .hole{width:58px;height:58px;border-radius:50%;background:var(--paper);display:flex;align-items:center;justify-content:center;flex-direction:column;}
+  .ring .hole b{font-size:15px;font-weight:800;color:var(--ink);}
+  .ring .hole span{font-size:8.5px;color:var(--ink-faint);font-weight:600;}
+  .proc-hero h3{font-size:15px;font-weight:800;margin:0 0 3px;color:var(--ink);}
+  .proc-hero p{font-size:11.5px;color:var(--ink-soft);margin:0;line-height:1.5;}
+  .trace{margin:20px 20px 0;background:var(--paper);border-radius:16px;box-shadow:var(--shadow);padding:18px 18px 6px;}
+  .trace .row{display:flex;gap:12px;padding-bottom:20px;position:relative;}
+  .trace .row:last-child{padding-bottom:12px;}
+  .trace .row::before{content:"";position:absolute;left:5px;top:16px;bottom:0;width:1px;background:var(--line);}
+  .trace .row:last-child::before{display:none;}
+  .trace .node{width:11px;height:11px;border-radius:50%;flex-shrink:0;margin-top:2px;}
+  .trace .node.done{background:var(--green);}
+  .trace .node.pending{border:1.5px solid var(--line);background:var(--paper);}
+  .trace .t h4{font-size:13px;margin:0 0 2px;font-weight:700;color:var(--ink);}
+  .trace .t p{font-size:11px;color:var(--ink-faint);margin:0;}
+  .trace .row.pending h4{color:var(--ink-soft);}
+  .schema-note{margin:16px 20px 0;font-size:10.5px;color:var(--ink-faint);line-height:1.6;}
+
+  .qb-title{padding:14px 20px 0;}
+  .qb-title h2{font-size:19px;font-weight:800;color:var(--ink);margin:0 0 3px;letter-spacing:-.01em;}
+  .qb-title p{font-size:12px;color:var(--ink-soft);margin:0 0 16px;}
+
+  .progress-banner{margin:0 20px 16px;background:var(--paper);border-radius:12px;padding:12px 15px;font-size:12px;color:var(--ink-soft);font-weight:600;box-shadow:var(--shadow-sm);display:flex;justify-content:space-between;align-items:center;}
+  .progress-banner b{color:var(--ink);font-weight:800;}
+
+  .email-card{margin:0 20px 16px;background:var(--paper);border-radius:14px;padding:14px 16px;box-shadow:var(--shadow-sm);}
+  .email-card h4{font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:var(--ink-faint);font-weight:700;margin:0 0 8px;}
+  .email-meta{font-size:11.5px;color:var(--ink-soft);}
+  .email-meta b{color:var(--ink);font-weight:700;}
+  .email-body{font-size:12.5px;line-height:1.6;color:var(--ink);margin-top:8px;}
+
+  /* v2SQ: one card per matched supplier, each independently editable + sendable */
+  .supplier-cards{margin:0 20px;display:flex;flex-direction:column;gap:14px;}
+  .supplier-card{background:var(--paper);border-radius:14px;padding:14px 16px 16px;box-shadow:var(--shadow-sm);}
+  .supplier-card.is-sent{opacity:.85;}
+  .sc-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;}
+  .sc-head-l{display:flex;align-items:center;gap:9px;}
+  .sc-head b{font-weight:700;color:var(--ink);font-size:13.5px;}
+  .sc-meta{font-size:11px;color:var(--ink-faint);margin:0 0 12px;padding-left:37px;}
+  .sc-sent-note{margin:0 0 12px;background:var(--green-bg);border-radius:10px;padding:9px 12px;font-size:11.5px;color:#166B49;font-weight:600;}
+  .mini-av{width:28px;height:28px;font-size:10px;border-radius:8px;display:flex;align-items:center;justify-content:center;font-weight:800;}
+
+  /* v2SQ: the actual email — To/Subject/Body — always exactly what "Send" fires */
+  .sc-email-preview{background:var(--bg);border:1.5px solid var(--line);border-radius:12px;padding:12px 13px;margin:0 0 14px;}
+  .sc-email-hdr{margin:0 0 10px;}
+  .sc-email-row{display:flex;align-items:center;gap:8px;margin-bottom:6px;}
+  .sc-email-row span{flex-shrink:0;width:46px;font-size:10.5px;color:var(--ink-faint);font-weight:700;text-transform:uppercase;letter-spacing:.04em;}
+  .sc-email-row input{flex:1;border:1.5px solid var(--line);border-radius:9px;padding:8px 10px;font-size:12.5px;background:var(--paper);font-family:var(--sans);color:var(--ink);font-weight:600;}
+  .sc-email-row input:focus{outline:none;border-color:var(--navy);}
+  .sc-email-row input:disabled{border:none;background:none;padding-left:0;color:var(--ink);}
+  .sc-email-body{border-top:1px solid var(--line);padding-top:10px;font-size:12.5px;line-height:1.65;color:var(--ink);white-space:pre-wrap;font-family:var(--sans);}
+
+  .sc-detail-label{font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:var(--ink-faint);font-weight:700;margin:0 0 10px;}
+  .sc-hint{text-transform:none;letter-spacing:0;font-weight:500;color:var(--ink-faint);}
+
+  .qb-fields{margin:0;}
+  .field{margin-bottom:12px;}
+  .field-label{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;}
+  .field-label span{font-size:11.5px;color:var(--ink-soft);font-weight:600;}
+  .tag{font-size:9px;font-weight:800;padding:2px 8px;border-radius:20px;letter-spacing:.02em;}
+  .tag.ai{color:var(--amber);background:var(--amber-bg);}
+  .tag.db{color:var(--blue);background:var(--blue-bg);}
+  .tag.review{color:var(--red);background:var(--red-bg);}
+  .tag.manual{color:var(--green);background:var(--green-bg);}
+  .field input{width:100%;border:1.5px solid var(--line);border-radius:11px;padding:11px 12px;font-size:13.5px;background:var(--bg);font-family:var(--sans);color:var(--ink);font-weight:600;}
+  .field input:focus{outline:none;border-color:var(--navy);}
+  .field input.review{border-color:var(--red);background:#FFFAF9;}
+  .qb-fields.readonly input{border:none;background:none;padding-left:0;pointer-events:none;color:var(--ink);}
+
+  .sc-send-row{margin-top:10px;}
+  .btn-send{background:var(--brass);color:#241705;border:none;font-size:13px;font-weight:800;padding:12px;border-radius:11px;cursor:pointer;width:100%;}
+  .btn-send:disabled{background:var(--line);color:var(--ink-faint);cursor:default;}
+
+  .send-bar{padding:16px 20px 8px;}
+
+  /* ---------- DESKTOP ---------- */
+  @media (min-width: 900px){
+    body{max-width:none;}
+    .login-shell{display:flex;}
+    .login-brand{display:flex;flex:1;background:var(--navy);color:#fff;flex-direction:column;justify-content:center;padding:70px;}
+    .login-brand .brandrow{justify-content:flex-start;margin-bottom:26px;}
+    .login-brand .wordmark{color:#fff;font-size:19px;}
+    .login-brand h2{font-size:30px;font-weight:800;letter-spacing:-.02em;margin:0 0 14px;max-width:380px;line-height:1.25;}
+    .login-brand p{font-size:14px;color:#9BAAC4;max-width:360px;line-height:1.6;}
+    .login-form-wrap{flex:1;padding:40px;}
+
+    .app-shell{display:grid;grid-template-columns:420px 1fr;height:100vh;}
+    body.detail-open .desk-pane{display:block !important;}
+    body.detail-open .detail-pane{display:block !important;}
+    .desk-pane{border-right:1px solid var(--line);overflow-y:auto;height:100vh;}
+    .detail-pane{overflow-y:auto;height:100vh;background:var(--bg);}
+    .back-row{display:none;}
+    .detail-empty.is-empty{display:flex;align-items:center;justify-content:center;height:100%;}
+    .detail-body{max-width:640px;margin:0 auto;padding-top:20px;}
+    .proc-hero,.trace,.schema-note,.qb-title,.progress-banner,.email-card,.supplier-cards{margin-left:0;margin-right:0;}
+  }
+</style>
+</head>
+<body>
+
+<div class="proto-nav">
+  <button id="pnav-login" class="active" onclick="go('login')">Login</button>
+  <button id="pnav-app" onclick="go('app')">App</button>
+</div>
+
+<!-- LOGIN -->
+<section id="screen-login" class="screen is-active">
+  <div class="login-shell">
+    <div class="login-brand">
+      <div class="brandrow"><div class="mark"><span>Q</span></div><div class="wordmark">QuoteFlow</div></div>
+      <h2>The desk you'll actually enjoy using</h2>
+      <p>Enquiries, quotes and suppliers matched and drafted automatically &mdash; you review, edit, and send.</p>
+    </div>
+    <div class="login-form-wrap">
+      <div class="login-form-inner">
+        <div class="brandrow" style="justify-content:center;"><div class="mark"><span>Q</span></div><div class="wordmark">QuoteFlow</div></div>
+        <div class="login-title">
+          <h1>Sign in</h1>
+          <p>Welcome back to your desk</p>
+        </div>
+        <div class="field-group"><label>Email</label><input type="email" value="operator@quoteflow.io"></div>
+        <div class="field-group"><label>Password</label><input type="password" value="********"></div>
+        <div class="forgot"><a href="#">Forgot password?</a></div>
+        <button class="btn-primary" onclick="go('app')">Sign in</button>
+        <div class="demo-link"><a onclick="go('app')">Continue as demo user</a></div>
+        <div class="login-foot">Local proof of concept &middot; QuoteFlow 2026</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- APP -->
+<section id="screen-app" class="screen">
+  <div class="app-shell">
+
+    <div class="desk-pane">
+      <div class="app-top">
+        <div><div class="greet-sm">Good morning</div><div class="greet-lg">Jordan</div></div>
+        <div class="avatar">JP</div>
+      </div>
+
+      <div class="stat-row" id="statRow">
+        <div class="stat-chip active" data-filter="all"><div class="lbl">All</div><div class="val">6</div></div>
+        <div class="stat-chip" data-filter="new"><div class="lbl">New</div><div class="val">2</div></div>
+        <div class="stat-chip" data-filter="processing"><div class="lbl">Processing</div><div class="val">2</div></div>
+        <div class="stat-chip" data-filter="drafted"><div class="lbl">Drafted</div><div class="val">2</div></div>
+        <div class="stat-chip" data-filter="sent"><div class="lbl">Fully sent</div><div class="val">1</div></div>
+      </div>
+
+      <div class="app-body" id="dealList">
+        <div class="deal-card" data-status="processing" data-deal="apex" onclick="selectDeal('apex')">
+          <div class="deal-top"><div class="deal-who"><div class="av av-1">AM</div><div><div class="deal-client">Apex Manufacturing</div><div class="deal-cat">Industrial fasteners</div></div></div><span class="pill processing">Processing</span></div>
+          <div class="deal-subject">Stainless steel bolts M10x50, quantity 5,000</div>
+          <div class="deal-foot"><span>Received 9 min ago</span><span>Extracting &rarr;</span></div>
+        </div>
+        <div class="deal-card" data-status="drafted" data-deal="meridian" onclick="selectDeal('meridian')">
+          <div class="deal-top"><div class="deal-who"><div class="av av-2">MT</div><div><div class="deal-client">Meridian Textiles</div><div class="deal-cat">Textiles</div></div></div><span class="pill drafted">Drafted</span></div>
+          <div class="deal-subject">Organic cotton canvas, 800m roll, recurring order</div>
+          <div class="deal-foot"><span>1/3 sent</span><span>Review &rarr;</span></div>
+        </div>
+        <div class="deal-card" data-status="new" data-deal="northfield" onclick="selectDeal('northfield')">
+          <div class="deal-top"><div class="deal-who"><div class="av av-3">NF</div><div><div class="deal-client">Northfield Foods Ltd</div><div class="deal-cat">Food products</div></div></div><span class="pill new">New</span></div>
+          <div class="deal-subject">Vacuum-sealed spice packets, 12,000 units</div>
+          <div class="deal-foot"><span>Received 2 hr ago</span><span>Not started</span></div>
+        </div>
+        <div class="deal-card" data-status="drafted" data-fullsent="true" data-deal="solaris" onclick="selectDeal('solaris')">
+          <div class="deal-top"><div class="deal-who"><div class="av av-4">SE</div><div><div class="deal-client">Solaris Electronics</div><div class="deal-cat">Electronics</div></div></div><span class="pill drafted">Drafted</span></div>
+          <div class="deal-subject">PCB connectors, 3-pin, 20,000 units</div>
+          <div class="deal-foot"><span>2/2 sent</span><span>Awaiting supplier replies</span></div>
+        </div>
+        <div class="deal-card" data-status="new" data-deal="harborline" onclick="selectDeal('harborline')">
+          <div class="deal-top"><div class="deal-who"><div class="av av-5">HC</div><div><div class="deal-client">Harborline Chemicals</div><div class="deal-cat">Chemicals</div></div></div><span class="pill new">New</span></div>
+          <div class="deal-subject">Industrial-grade citric acid, 2 tonnes</div>
+          <div class="deal-foot"><span>Received 3 hr ago</span><span>Not started</span></div>
+        </div>
+        <div class="deal-card" data-status="processing" data-deal="ferro" onclick="selectDeal('ferro')">
+          <div class="deal-top"><div class="deal-who"><div class="av av-6">FD</div><div><div class="deal-client">Ferro Dynamics</div><div class="deal-cat">Machinery</div></div></div><span class="pill processing">Processing</span></div>
+          <div class="deal-subject">CNC-machined gearbox housings, 400 units</div>
+          <div class="deal-foot"><span>Received 40 min ago</span><span>Matching &rarr;</span></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="detail-pane">
+      <div class="back-row"><span class="back" onclick="closeDetail()">&larr; The Desk</span></div>
+      <div class="detail-empty" id="detailEmpty">Select an enquiry on the left to see processing status or open the quotation builder.</div>
+
+      <div class="detail-body" id="detailBody" style="display:none;">
+        <!-- PROCESSING VIEW -->
+        <div id="procView" style="display:none;">
+          <div class="proc-hero">
+            <div class="ring" id="procRing"><div class="hole"><b id="procPct">50%</b><span id="procFrac">2 of 4</span></div></div>
+            <div><h3 id="procName">&nbsp;</h3><p id="procSub">&nbsp;</p></div>
+          </div>
+          <div class="trace" id="procTrace"></div>
+          <div class="schema-note">Status is read directly off the enquiry record &mdash; no separate processing table. Once drafted, this opens straight into the builder.</div>
+        </div>
+
+        <!-- BUILDER VIEW (v2SQ — Supplier Outreach Builder) -->
+        <div id="qbView" style="display:none;">
+          <div class="qb-title"><h2 id="qbName">&nbsp;</h2><p id="qbSub">&nbsp;</p></div>
+          <div class="progress-banner" id="qbProgress"></div>
+          <div class="email-card">
+            <h4>Original email</h4>
+            <div class="email-meta"><b>From</b> <span id="qbEmailFrom"></span></div>
+            <div class="email-body" id="qbEmailBody"></div>
+          </div>
+          <div class="supplier-cards" id="qbSupplierCards"></div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</section>
+
+<script>
+  var deals = {
+    apex: {name:'Apex Manufacturing', category:'Industrial fasteners', subject:'Stainless steel bolts M10x50, quantity 5,000', status:'processing', stepsDone:2, received:'9 minutes ago'},
+    ferro: {name:'Ferro Dynamics', category:'Machinery', subject:'CNC-machined gearbox housings, 400 units', status:'processing', stepsDone:3, received:'40 minutes ago'},
+    northfield: {name:'Northfield Foods Ltd', category:'Food products', subject:'Vacuum-sealed spice packets, 12,000 units', status:'new', stepsDone:1, received:'2 hours ago'},
+    harborline: {name:'Harborline Chemicals', category:'Chemicals', subject:'Industrial-grade citric acid, 2 tonnes', status:'new', stepsDone:1, received:'3 hours ago'},
+    meridian: {
+      // v2SQ: "drafted" now means N supplier_quote_requests rows exist for this
+      // enquiry, each independently draft/sent. Enquiry status stays "Drafted"
+      // even once every card is sent — see solaris below for that end state.
+      name:'Meridian Textiles', category:'Textiles', subject:'Organic cotton canvas, 800m roll, recurring order', status:'drafted',
+      email:{from:'priya@meridiantextiles.com', body:'"Looking for 800m of organic cotton canvas, mid-weight, undyed. Need it landed in Rotterdam within four weeks. Recurring monthly order if pricing works out."'},
+      // v2SQ: draft_body is generated from bodyTemplate + fields — {{key}} in
+      // the template gets replaced by the matching field's current value on
+      // every edit, so the preview above the fields is always the literal
+      // email that "Send" will fire, never a stale second copy of the fields.
+      supplierDrafts:[
+        {
+          initials:'DW', avatarClass:'av-2', name:'Dhaka Weave Co.', rating:'4.6', matchScore:0.91, sendStatus:'sent', sentAt:'Sent 40 minutes ago',
+          draftSubject:'RFQ — Organic cotton canvas, 800m',
+          draftTo:'orders@dhakaweave.com',
+          bodyTemplate:'Hi team,\n\nWe\'re sourcing organic cotton canvas, mid-weight, undyed, and your product came up as a strong match for our client\'s requirement.\n\nQuantity requested: {{quantity}}\nOur reference price: {{unitPrice}}\nCertification needed: {{certification}}\nRequested delivery: {{delivery}}\n\nCould you confirm current pricing, MOQ, and lead time for this order? This may become a recurring monthly order if terms work out.\n\nThanks,\nQuoteFlow Sourcing Team',
+          fields:[
+            {key:'quantity', label:'Quantity requested', tag:'ai', tagLabel:'AI-generated', value:'800 m'},
+            {key:'unitPrice', label:'Target unit price', tag:'db', tagLabel:'From database', value:'$4.35 / m'},
+            {key:'certification', label:'Certification needed', tag:'review', tagLabel:'Needs review', value:'GOTS status unconfirmed'},
+            {key:'delivery', label:'Requested delivery', tag:'manual', tagLabel:'Manual', value:'3 weeks, FOB Rotterdam'}
+          ]
+        },
+        {
+          initials:'AT', avatarClass:'av-4', name:'Anatolia Textile Mills', rating:'4.4', matchScore:0.84, sendStatus:'draft',
+          draftSubject:'RFQ — Organic cotton canvas, 800m',
+          draftTo:'sales@anatoliatextile.com',
+          bodyTemplate:'Hi team,\n\nWe\'re sourcing organic cotton canvas, mid-weight, undyed, and your product came up as a strong match for our client\'s requirement.\n\nQuantity requested: {{quantity}}\nOur reference price: {{unitPrice}}\nRequested delivery: {{delivery}}\n\nCould you confirm current pricing, MOQ, and lead time for this order? This may become a recurring monthly order if terms work out.\n\nThanks,\nQuoteFlow Sourcing Team',
+          fields:[
+            {key:'quantity', label:'Quantity requested', tag:'ai', tagLabel:'AI-generated', value:'800 m'},
+            {key:'unitPrice', label:'Target unit price', tag:'db', tagLabel:'From database', value:'$4.60 / m'},
+            {key:'delivery', label:'Requested delivery', tag:'manual', tagLabel:'Manual', value:'3 weeks, FOB Rotterdam'}
+          ]
+        },
+        {
+          initials:'GO', avatarClass:'av-3', name:'Gujarat Organic Fabrics', rating:'3.9', matchScore:0.71, sendStatus:'draft',
+          draftSubject:'RFQ — Organic cotton canvas, 800m',
+          draftTo:'export@gujaratorganic.in',
+          bodyTemplate:'Hi team,\n\nWe\'re sourcing organic cotton canvas, mid-weight, undyed, and your product came up as a strong match for our client\'s requirement.\n\nQuantity requested: {{quantity}}\nOur reference price: {{unitPrice}}\nRequested delivery: {{delivery}}\n\nCould you confirm current pricing, MOQ, and lead time for this order? This may become a recurring monthly order if terms work out.\n\nThanks,\nQuoteFlow Sourcing Team',
+          fields:[
+            {key:'quantity', label:'Quantity requested', tag:'ai', tagLabel:'AI-generated', value:'800 m'},
+            {key:'unitPrice', label:'Target unit price', tag:'db', tagLabel:'From database', value:'$4.20 / m'},
+            {key:'delivery', label:'Requested delivery', tag:'manual', tagLabel:'Manual', value:'3 weeks, FOB Rotterdam'}
+          ]
+        }
+      ]
+    },
+    solaris: {
+      // v2SQ end state: every supplier draft sent, but the enquiry itself stays
+      // "Drafted" — there's no separate top-level "Sent" status for the enquiry.
+      // The "Sent" filter chip on the left matches enquiries where every card
+      // is sent, computed from supplierDrafts, not a stored status.
+      name:'Solaris Electronics', category:'Electronics', subject:'PCB connectors, 3-pin, 20,000 units', status:'drafted',
+      email:{from:'contact@solariselec.com', body:'"Need 20,000 PCB connectors, 3-pin. Shenzhen origin preferred. Two week turnaround."'},
+      supplierDrafts:[
+        {
+          initials:'SC', avatarClass:'av-6', name:'ShenZhen Connect Co.', rating:'4.7', matchScore:0.93, sendStatus:'sent', sentAt:'Sent yesterday at 4:12 PM &middot; awaiting supplier reply',
+          draftSubject:'RFQ — PCB connectors, 3-pin, 20,000 units',
+          draftTo:'sales@shenzhenconnect.com',
+          bodyTemplate:'Hi team,\n\nWe need 20,000 PCB connectors, 3-pin, and your listing matched our client\'s spec.\n\nQuantity requested: {{quantity}}\nOur reference price: {{unitPrice}}\nRequested delivery: {{delivery}}\n\nCould you confirm current pricing, MOQ, and lead time?\n\nThanks,\nQuoteFlow Sourcing Team',
+          fields:[
+            {key:'quantity', label:'Quantity requested', tag:'ai', tagLabel:'AI-generated', value:'20,000 units'},
+            {key:'unitPrice', label:'Target unit price', tag:'db', tagLabel:'From database', value:'$0.42 / unit'},
+            {key:'delivery', label:'Requested delivery', tag:'manual', tagLabel:'Manual', value:'2 weeks, FOB Shenzhen'}
+          ]
+        },
+        {
+          initials:'PT', avatarClass:'av-5', name:'Pearl River Terminals', rating:'4.2', matchScore:0.78, sendStatus:'sent', sentAt:'Sent yesterday at 4:15 PM &middot; awaiting supplier reply',
+          draftSubject:'RFQ — PCB connectors, 3-pin, 20,000 units',
+          draftTo:'quotes@pearlriverterm.com',
+          bodyTemplate:'Hi team,\n\nWe need 20,000 PCB connectors, 3-pin, and your listing matched our client\'s spec.\n\nQuantity requested: {{quantity}}\nOur reference price: {{unitPrice}}\nRequested delivery: {{delivery}}\n\nCould you confirm current pricing, MOQ, and lead time?\n\nThanks,\nQuoteFlow Sourcing Team',
+          fields:[
+            {key:'quantity', label:'Quantity requested', tag:'ai', tagLabel:'AI-generated', value:'20,000 units'},
+            {key:'unitPrice', label:'Target unit price', tag:'db', tagLabel:'From database', value:'$0.45 / unit'},
+            {key:'delivery', label:'Requested delivery', tag:'manual', tagLabel:'Manual', value:'2 weeks, FOB Shenzhen'}
+          ]
+        }
+      ]
+    }
+  };
+
+  var avatarByDeal = {apex:'av-1', ferro:'av-6', northfield:'av-3', harborline:'av-5', meridian:'av-2', solaris:'av-4'};
+  var initialsByDeal = {apex:'AM', ferro:'FD', northfield:'NF', harborline:'HC', meridian:'MT', solaris:'SE'};
+
+  // v2SQ: last two steps renamed — pipeline output is now per-supplier outreach
+  // drafts, not a single client-facing quotation. "All drafts sent" tracks this
+  // enquiry's own send progress; it does NOT move the enquiry's own status off
+  // "Drafted" (see selectDeal / sendSupplierDraft below).
+  var stepDefs = [
+    {h:'Enquiry received', done:function(d){return 'Received ' + d.received;}, pend:'Not yet received'},
+    {h:'Content extracted', done:'Product, quantity and delivery window parsed', pend:'Waiting on extraction'},
+    {h:'Supplier drafts generated', done:'Outreach drafted for every matched supplier', pend:'Waiting on supplier match and drafting'},
+    {h:'All supplier drafts sent', done:'Every matched supplier contacted', pend:'Not yet'}
+  ];
+
+  function go(name){
+    var screens = document.getElementsByClassName('screen');
+    for (var i = 0; i < screens.length; i++){ screens[i].classList.remove('is-active'); }
+    document.getElementById('screen-' + name).classList.add('is-active');
+    var ids = ['login','app'];
+    for (var j = 0; j < ids.length; j++){
+      var b = document.getElementById('pnav-' + ids[j]);
+      if (ids[j] === name){ b.classList.add('active'); } else { b.classList.remove('active'); }
+    }
+    window.scrollTo(0,0);
+    if (name === 'app'){ selectDeal('apex'); }
+  }
+
+  function filterBy(status){
+    var chips = document.querySelectorAll('.stat-chip');
+    for (var i=0;i<chips.length;i++){ chips[i].classList.toggle('active', chips[i].dataset.filter===status); }
+    var cards = document.querySelectorAll('.deal-card');
+    for (var j=0;j<cards.length;j++){
+      // v2SQ: "sent" is a computed filter (every supplier draft sent), not a
+      // stored status — the enquiry's own status stays "drafted" throughout.
+      var show = (status==='all') || (cards[j].dataset.status===status) ||
+                 (status==='sent' && cards[j].dataset.fullsent==='true');
+      cards[j].style.display = show ? '' : 'none';
+    }
+  }
+
+  (function(){
+    var chips = document.querySelectorAll('.stat-chip');
+    for (var i=0;i<chips.length;i++){
+      chips[i].addEventListener('click', function(){ filterBy(this.dataset.filter); });
+    }
+  })();
+
+  function buildTrace(stepsDone, d){
+    var html = '';
+    for (var i=0;i<stepDefs.length;i++){
+      var s = stepDefs[i];
+      var isDone = i < stepsDone;
+      var desc = isDone ? (typeof s.done==='function' ? s.done(d) : s.done) : s.pend;
+      html += '<div class="row ' + (isDone?'':'pending') + '">' +
+                '<div class="node ' + (isDone?'done':'pending') + '"></div>' +
+                '<div class="t"><h4>' + s.h + '</h4><p>' + desc + '</p></div>' +
+              '</div>';
+    }
+    return html;
+  }
+
+  var currentDealKey = null;
+
+  function selectDeal(key){
+    var d = deals[key];
+    if (!d) return;
+    currentDealKey = key;
+
+    document.querySelectorAll('.deal-card').forEach(function(c){ c.classList.toggle('selected', c.dataset.deal===key); });
+    document.getElementById('detailEmpty').style.display = 'none';
+    document.getElementById('detailEmpty').classList.remove('is-empty');
+    document.getElementById('detailBody').style.display = 'block';
+
+    var procView = document.getElementById('procView');
+    var qbView = document.getElementById('qbView');
+
+    if (d.status === 'new' || d.status === 'processing'){
+      procView.style.display = 'block';
+      qbView.style.display = 'none';
+      var pct = Math.round((d.stepsDone/4)*100);
+      document.getElementById('procRing').style.background = 'conic-gradient(var(--brass) 0deg ' + (pct*3.6) + 'deg, var(--line) ' + (pct*3.6) + 'deg 360deg)';
+      document.getElementById('procPct').textContent = pct + '%';
+      document.getElementById('procFrac').textContent = d.stepsDone + ' of 4';
+      document.getElementById('procName').textContent = d.name;
+      document.getElementById('procSub').innerHTML = d.subject + '<br>' + d.category;
+      document.getElementById('procTrace').innerHTML = buildTrace(d.stepsDone, d);
+    } else {
+      // v2SQ: "drafted" is the only non-processing state an enquiry has — it
+      // never flips to a separate "sent" state, even once every card below
+      // is sent (see renderSupplierCards' progress banner instead).
+      procView.style.display = 'none';
+      qbView.style.display = 'block';
+
+      document.getElementById('qbName').textContent = d.name;
+      document.getElementById('qbSub').textContent = d.subject;
+      document.getElementById('qbEmailFrom').textContent = d.email.from;
+      document.getElementById('qbEmailBody').textContent = d.email.body;
+
+      renderSupplierCards(d);
+    }
+
+    document.body.classList.add('detail-open');
+  }
+
+  // v2SQ: draft_body = bodyTemplate with every {{key}} swapped for that
+  // field's current value. This is the ONLY place body text comes from —
+  // there is no separately-typed body, so the preview can never drift from
+  // the fields that produced it.
+  function composeBody(s){
+    var text = s.bodyTemplate;
+    for (var i=0;i<s.fields.length;i++){
+      var f = s.fields[i];
+      text = text.split('{{' + f.key + '}}').join(f.value);
+    }
+    return text;
+  }
+
+  function bodyElId(key, idx){ return 'scBody_' + key + '_' + idx; }
+
+  // v2SQ: renders one card per matched supplier, each independently
+  // editable and independently sendable — this replaces the old single
+  // quotation-draft + "Send to client" bar. Each card leads with the actual
+  // email (To / Subject / Body); the structured fields below it are what
+  // the operator actually edits, and every keystroke re-renders the body
+  // preview above so it's always exactly what "Send" will fire.
+  function renderSupplierCards(d){
+    var total = d.supplierDrafts.length;
+    var sentCount = 0;
+    for (var c=0;c<total;c++){ if (d.supplierDrafts[c].sendStatus === 'sent') sentCount++; }
+
+    document.getElementById('qbProgress').innerHTML =
+      '<span>Supplier outreach</span><b>' + sentCount + ' / ' + total + ' sent</b>';
+
+    var html = '';
+    for (var i=0;i<d.supplierDrafts.length;i++){
+      var s = d.supplierDrafts[i];
+      var sent = (s.sendStatus === 'sent');
+      var dis = sent ? ' disabled' : '';
+
+      html += '<div class="supplier-card' + (sent ? ' is-sent' : '') + '">';
+      html += '<div class="sc-head"><div class="sc-head-l"><div class="av mini-av ' + s.avatarClass + '">' + s.initials + '</div><b>' + s.name + '</b></div>' +
+                (sent ? '<span class="tag manual">Sent</span>' : '<span class="tag ai">Match ' + Math.round(s.matchScore*100) + '%</span>') +
+              '</div>';
+      html += '<div class="sc-meta">&#9733; ' + s.rating + '</div>';
+      if (sent){ html += '<div class="sc-sent-note">' + s.sentAt + '</div>'; }
+
+      // The actual email — this is what "Send" fires, not a summary of it
+      html += '<div class="sc-email-preview">';
+      html += '<div class="sc-email-hdr">';
+      html += '<div class="sc-email-row"><span>To</span><input' + dis + ' value="' + s.draftTo + '" onchange="updateTo(\'' + currentDealKey + '\',' + i + ',this.value)"></div>';
+      html += '<div class="sc-email-row"><span>Subject</span><input' + dis + ' value="' + s.draftSubject + '" onchange="updateSubject(\'' + currentDealKey + '\',' + i + ',this.value)"></div>';
+      html += '</div>';
+      html += '<div class="sc-email-body" id="' + bodyElId(currentDealKey, i) + '">' + composeBody(s) + '</div>';
+      html += '</div>';
+
+      // Structured fields that drive the body above
+      html += '<div class="sc-detail-label">Draft details <span class="sc-hint">— edits update the email above</span></div>';
+      var fieldsHtml = '';
+      for (var j=0;j<s.fields.length;j++){
+        var f = s.fields[j];
+        fieldsHtml += '<div class="field"><div class="field-label"><span>' + f.label + '</span><span class="tag ' + f.tag + '">' + f.tagLabel + '</span></div><input class="' + (f.tag==='review' ? 'review' : '') + '"' + dis + ' value="' + f.value + '" oninput="updateField(\'' + currentDealKey + '\',' + i + ',' + j + ',this.value)"></div>';
+      }
+      html += '<div class="qb-fields' + (sent ? ' readonly' : '') + '">' + fieldsHtml + '</div>';
+
+      if (!sent){
+        html += '<div class="sc-send-row"><button class="btn-send" onclick="sendSupplierDraft(\'' + currentDealKey + '\',' + i + ')">Send to ' + s.name + '</button></div>';
+      }
+      html += '</div>';
+    }
+    document.getElementById('qbSupplierCards').innerHTML = html;
+  }
+
+  // v2SQ: editing a structured field re-substitutes it into the body
+  // template and repaints just that one body preview — not a full card
+  // re-render, so the operator's cursor/focus isn't disturbed mid-keystroke.
+  function updateField(key, idx, fieldIdx, val){
+    var d = deals[key];
+    if (!d || !d.supplierDrafts || !d.supplierDrafts[idx]) return;
+    d.supplierDrafts[idx].fields[fieldIdx].value = val;
+    var el = document.getElementById(bodyElId(key, idx));
+    if (el) el.textContent = composeBody(d.supplierDrafts[idx]);
+  }
+
+  function updateSubject(key, idx, val){
+    var d = deals[key];
+    if (!d || !d.supplierDrafts || !d.supplierDrafts[idx]) return;
+    d.supplierDrafts[idx].draftSubject = val;
+  }
+
+  function updateTo(key, idx, val){
+    var d = deals[key];
+    if (!d || !d.supplierDrafts || !d.supplierDrafts[idx]) return;
+    d.supplierDrafts[idx].draftTo = val;
+  }
+
+  // v2SQ: sends ONE supplier's draft. Other cards on the same enquiry are
+  // untouched, and the enquiry's own status is never changed here.
+  function sendSupplierDraft(key, idx){
+    var d = deals[key];
+    if (!d || !d.supplierDrafts || !d.supplierDrafts[idx]) return;
+
+    d.supplierDrafts[idx].sendStatus = 'sent';
+    d.supplierDrafts[idx].sentAt = 'Sent just now &middot; awaiting supplier reply';
+
+    renderSupplierCards(d);
+    updateDealCardProgress(key);
+  }
+
+  // Keeps the left-hand deal card's "x/y sent" footer and fully-sent filter
+  // flag in sync after a send, without a full list re-render.
+  function updateDealCardProgress(key){
+    var d = deals[key];
+    if (!d || !d.supplierDrafts) return;
+    var total = d.supplierDrafts.length;
+    var sentCount = 0;
+    for (var i=0;i<total;i++){ if (d.supplierDrafts[i].sendStatus === 'sent') sentCount++; }
+
+    var card = document.querySelector('.deal-card[data-deal="' + key + '"]');
+    if (!card) return;
+    var footSpans = card.querySelectorAll('.deal-foot span');
+    if (footSpans[0]) footSpans[0].textContent = sentCount + '/' + total + ' sent';
+    card.dataset.fullsent = (sentCount === total) ? 'true' : 'false';
+  }
+
+  function closeDetail(){
+    document.body.classList.remove('detail-open');
+  }
+</script>
+</body>
+</html>

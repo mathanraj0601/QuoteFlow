@@ -1,11 +1,15 @@
 # gmail-trigger-poc
 
-Local POC for **QuoteFlow Step 1**: a Python process polls a Gmail inbox and hands
-every new email to `process_email()`. No public server, webhook, or domain — it
-runs entirely on localhost using **polling** (`users.history.list`), not Pub/Sub.
+Local POC for **QuoteFlow** (v2SQ — supplier-quote outreach). A Python process
+polls a Gmail inbox and hands every new email to `process_email()`, which
+classifies it, extracts the enquiry, matches suppliers, and drafts one outreach
+email per matched supplier. Runs entirely on localhost — **polling**
+(`users.history.list`), **SQLite**, embedded **ChromaDB**; no webhook or domain.
 
-Step 2 (`classify → extract → match → draft`) is **not built yet** — `process_email()`
-is a stub that echoes the email back.
+- **Step 1** — Gmail OAuth + history-based polling. ✅
+- **Step 2** — `classify → extract → match → draft` pipeline + REST API. ✅
+  Sending outreach back out (`gmail.send`) and client-facing quotations are out
+  of scope for this version (integration guide §9.4).
 
 ```
 Gmail inbox (test account)
@@ -14,9 +18,14 @@ Gmail inbox (test account)
 Single FastAPI process  (uvicorn gmail_trigger_poc.app:app)
       ├── poll_gmail() thread ──┐
       │                         ▼
-      │                  process_email()   ← Step 2 hook, one shared method
+      │        process_email(email) ─ classify+extract (LLM)
+      │                             ─ match: Chroma products → SQL suppliers → rerank
+      │                             ─ draft 1 outreach email per supplier ≥ threshold (LLM)
+      │                             → supplier_quote_requests rows  (status 'draft')
       │                         ▲
       └── POST /process-email ──┘  thin wrapper for curl/Postman
+              GET  /enquiry/{id}/supplier-drafts     GET /enquiries  /suppliers
+              PATCH/POST /supplier-quote-requests/{id}[/send]
 ```
 
 ## Layout
@@ -28,9 +37,18 @@ Single FastAPI process  (uvicorn gmail_trigger_poc.app:app)
 | `src/gmail_trigger_poc/auth.py` | OAuth — `get_gmail_service()` (JSON token, not pickle) |
 | `src/gmail_trigger_poc/gmail_client.py` | history checkpoint, message fetch, mark-as-read |
 | `src/gmail_trigger_poc/poller.py` | `poll_gmail()` background loop |
-| `src/gmail_trigger_poc/pipeline.py` | `process_email()` — Step 2 hook (stub) |
+| `src/gmail_trigger_poc/schema.sql` | canonical v2SQ SQLite schema (shipped verbatim, +1 column) |
+| `src/gmail_trigger_poc/db.py` | SQLite connect + `init_db()` |
+| `src/gmail_trigger_poc/seed.py` | one-time backfill load + product embedding |
+| `src/gmail_trigger_poc/vectorstore.py` | ChromaDB client + embedders (MiniLM / offline hash) |
+| `src/gmail_trigger_poc/matching.py` | vector search → SQL supplier join → rerank |
+| `src/gmail_trigger_poc/llm.py` | classify+extract & draft — Claude or offline stub |
+| `src/gmail_trigger_poc/repository.py` | clients / email_threads / supplier_quote_requests SQL |
+| `src/gmail_trigger_poc/pipeline.py` | `process_email()` — the orchestration |
 | `src/gmail_trigger_poc/app.py` | FastAPI app + poller thread on startup |
-| `docs/gmail-integration-guide.md` | Full guide + architect review |
+| `data/quoteflow_seed.json` | seed dataset (15 clients / 18 suppliers / 26 products / 104 emails) |
+| `docs/step2-pipeline.md` | what Step 2 built + validated + deviations from the plans |
+| `plans/` | the QuoteFlow spec set (flow doc, Plan B, schema, UI, minimal version) |
 
 ## Logging
 
@@ -72,18 +90,41 @@ Control it: `LOG_LEVEL=DEBUG` (per-cycle detail) / `INFO` (default) / `WARNING`.
 ## Quick start
 
 ```bash
-uv sync                      # install
-cp .env.example .env         # then edit
-# put credentials.json (Google Cloud OAuth client, Desktop app) in this folder
-uv run gmail-trigger-poc     # or: uv run uvicorn gmail_trigger_poc.app:app --reload
+uv sync                              # install (pulls anthropic + chromadb)
+cp .env.example .env                 # then edit
+uv run python -m gmail_trigger_poc.seed   # build quoteflow.db + chroma_data/ from the seed set
+uv run gmail-trigger-poc             # or: uv run uvicorn gmail_trigger_poc.app:app --reload
 ```
 
-First run opens a browser once for OAuth consent, then caches `token.json`.
+`seed` is a one-time backfill (re-run any time; `--keep` to load without resetting).
+The Gmail poller also needs `credentials.json` (Google Cloud OAuth client, Desktop
+app) in this folder — first run opens a browser once for consent, then caches
+`token.json`. Set `ENABLE_POLLER=false` to run the API alone.
 
 ```bash
 curl localhost:8000/health
-curl -X POST localhost:8000/process-email -H 'content-type: application/json' \
-  -d '{"id":"m1","thread_id":"t1","from":"a@b.com","subject":"Quote","body":"50 widgets"}'
+# drive the pipeline with a Gmail-shaped payload:
+curl -X POST localhost:8000/process-email -H 'content-type: application/json' -d '{
+  "id":"m1","thread_id":"t1","from":"john@apex-mfg.com",
+  "subject":"Enquiry: Stainless Steel Bolts M10x50 - 5,000 pieces",
+  "body":"- Product: Stainless Steel Bolts M10x50\n- Quantity required: 5,000 pieces\n- Preferred delivery terms: FOB Shanghai\n- Specifications: Grade A2-70, DIN 933\n- Delivery location: Ohio, USA"}'
+# -> {"status":"drafted","email_thread_id":N,"supplier_quote_request_ids":[...],...}
+
+curl localhost:8000/enquiry/N/supplier-drafts
+curl -X POST localhost:8000/supplier-quote-requests/1/send -d '{}'   # mark-only, no gmail.send
+```
+
+### Working without API keys
+
+Everything runs offline out of the box: `LLM_PROVIDER=auto` falls back to a
+deterministic **stub** when no `ANTHROPIC_API_KEY` (or `ant auth` profile) is
+present, and `EMBEDDING_PROVIDER=auto` falls back to an offline hash embedder if
+MiniLM can't download. To go live, add credentials and re-seed:
+
+```bash
+export ANTHROPIC_API_KEY=sk-ant-...          # real Claude for classify/extract/draft
+export EMBEDDING_PROVIDER=chroma_default      # real MiniLM product embeddings
+uv run python -m gmail_trigger_poc.seed       # re-embed under the new provider
 ```
 
 ## Tests
@@ -92,7 +133,11 @@ curl -X POST localhost:8000/process-email -H 'content-type: application/json' \
 uv run pytest
 ```
 
+Tests pin `EMBEDDING_PROVIDER=hash` + `LLM_PROVIDER=stub` and seed a throwaway
+SQLite/Chroma store under a temp dir — no network, no model download, no key.
+
 ## Environment variables
 
-See `.env.example` — every value has a default, so only `credentials.json` must
-actually exist. Full table in `docs/gmail-integration-guide.md` §2.
+See `.env.example` — every value has a default. Step 1 (Gmail/OAuth/logging)
+vars are documented in `docs/gmail-integration-guide.md` §2; Step 2 (DB, Chroma,
+embeddings, LLM, matching) vars are in `.env.example` and `docs/step2-pipeline.md`.

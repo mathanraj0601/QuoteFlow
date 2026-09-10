@@ -1,30 +1,89 @@
+"""End-to-end pipeline tests (stub LLM + hash embeddings, seeded throwaway store)."""
+
 from gmail_trigger_poc.pipeline import process_email
 
-
-SAMPLE = {
-    "id": "18e0f",
-    "thread_id": "18e0f",
-    "from": "client@example.com",
-    "subject": "Need a quote for 50 widgets",
-    "body": "Hi, please quote 50 units of part X.",
+BOLTS_ENQUIRY = {
+    "id": "pytest-bolts-1",
+    "thread_id": "1a2b3c",
+    "from": '"John Meyer" <john@apex-mfg.com>',
+    "to": "procurement@meridiantrade.com",
+    "subject": "Enquiry: Stainless Steel Bolts M10x50 - 5,000 pieces needed",
+    "body": (
+        "Dear Team,\n\nWe are sourcing Stainless Steel Bolts M10x50 and would like a quotation.\n"
+        "- Product: Stainless Steel Bolts M10x50\n"
+        "- Quantity required: 5,000 pieces\n"
+        "- Preferred delivery terms: FOB Shanghai\n"
+        "- Specifications: Grade A2-70, DIN 933\n"
+        "- Delivery location: Ohio, USA\n\nBest regards,\nJohn"
+    ),
 }
 
 
-def test_process_email_shape():
-    out = process_email(SAMPLE)
-    assert out["status"] == "received"
-    assert out["message_id"] == "18e0f"
-    assert out["subject"] == "Need a quote for 50 widgets"
-    assert out["body_chars"] == len(SAMPLE["body"])
-    assert out["quotation_id"] is None
+def test_non_enquiry_is_logged_not_drafted(fresh_store, fresh_conn):
+    email = {
+        "id": "pytest-ooo-1", "thread_id": "zz", "from": "bot@corp.com",
+        "to": "procurement@meridiantrade.com",
+        "subject": "Automatic reply: Out of office", "body": "I am away until Monday.",
+    }
+    result = process_email(email, fresh_store)
+    assert result["status"] == "logged"
+    assert result["scenario"] != "client_enquiry"
+
+    row = fresh_conn.execute(
+        "SELECT * FROM email_threads WHERE gmail_message_id = ?", (email["id"],)
+    ).fetchone()
+    assert row is not None and row["direction"] == "inbound"
+    assert fresh_conn.execute(
+        "SELECT COUNT(*) AS c FROM supplier_quote_requests WHERE email_thread_id = ?",
+        (row["id"],),
+    ).fetchone()["c"] == 0
 
 
-def test_process_email_is_idempotent():
-    assert process_email(SAMPLE) == process_email(SAMPLE)
+def test_client_enquiry_drafts_supplier_outreach(fresh_store, fresh_conn):
+    result = process_email(BOLTS_ENQUIRY, fresh_store)
+    assert result["status"] == "drafted"
+    ids = result["supplier_quote_request_ids"]
+    assert len(ids) >= 1
+
+    rows = fresh_conn.execute(
+        "SELECT * FROM supplier_quote_requests WHERE id IN (%s)"
+        % ",".join("?" * len(ids)),
+        ids,
+    ).fetchall()
+    assert len(rows) == len(ids)
+    for r in rows:
+        assert r["status"] == "draft"
+        assert r["draft_to"] and r["draft_subject"] and r["draft_body"]
+        assert r["draft_body_template"] and r["draft_fields_json"]
+        assert r["email_thread_id"] == result["email_thread_id"]
+    # every matched supplier specialises in fasteners for this enquiry
+    specs = {m["supplier_specialization"] for m in result["matched_suppliers"]}
+    assert specs == {"Industrial Fasteners"}
 
 
-def test_process_email_tolerates_missing_fields():
-    out = process_email({})
-    assert out["status"] == "received"
-    assert out["message_id"] is None
-    assert out["body_chars"] == 0
+def test_process_email_is_idempotent(fresh_store, fresh_conn):
+    first = process_email({**BOLTS_ENQUIRY, "id": "pytest-bolts-idem"}, fresh_store)
+    before = fresh_conn.execute(
+        "SELECT COUNT(*) AS c FROM supplier_quote_requests"
+    ).fetchone()["c"]
+
+    second = process_email({**BOLTS_ENQUIRY, "id": "pytest-bolts-idem"}, fresh_store)
+    after = fresh_conn.execute(
+        "SELECT COUNT(*) AS c FROM supplier_quote_requests"
+    ).fetchone()["c"]
+
+    assert second.get("idempotent_replay") is True
+    assert second["supplier_quote_request_ids"] == first["supplier_quote_request_ids"]
+    assert before == after  # no duplicate rows
+
+
+def test_enquiry_off_catalogue_still_returns_drafted(fresh_store):
+    email = {
+        "id": "pytest-offcat-1", "thread_id": "oc", "from": "buyer@example.com",
+        "to": "procurement@meridiantrade.com",
+        "subject": "Enquiry: bespoke neon signage",
+        "body": "We are looking for a quote on custom neon signage for a retail storefront.",
+    }
+    result = process_email(email, fresh_store)
+    assert result["status"] == "drafted"
+    assert isinstance(result["supplier_quote_request_ids"], list)

@@ -16,5 +16,13 @@ token.json
 token*.json
 last_history_id.json
 
+# Local databases / vector store (rebuilt by `python -m gmail_trigger_poc.seed`)
+*.db
+*.sqlite
+*.sqlite3
+chroma_data/
+*_chroma/
+smoke_*
+
 # Test / tooling caches
 .pytest_cache/

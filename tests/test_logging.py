@@ -60,13 +60,13 @@ def test_body_block_indents_and_caps_lines():
     assert body_block("") == "\n    | <empty body>"
 
 
-def test_pipeline_emits_info_log(caplog):
+def test_pipeline_emits_info_log(fresh_store, caplog):
     pkg = logging.getLogger(PACKAGE_LOGGER)
     old = pkg.propagate
     pkg.propagate = True  # let pytest's root caplog handler see our records
     try:
         with caplog.at_level(logging.INFO, logger=PACKAGE_LOGGER):
-            process_email({"id": "abc", "subject": "hi", "body": "hello"})
+            process_email({"id": "abc", "subject": "hi", "body": "hello"}, fresh_store)
     finally:
         pkg.propagate = old
     msgs = [r.getMessage() for r in caplog.records]

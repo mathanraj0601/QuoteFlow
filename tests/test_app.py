@@ -2,27 +2,108 @@ import os
 
 os.environ["ENABLE_POLLER"] = "false"  # don't spawn the poller during tests
 
+import pytest  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
 from gmail_trigger_poc.app import app  # noqa: E402
 
+ENQUIRY = {
+    "id": "api-bolts-1",
+    "thread_id": "9f9f9f",
+    "from": '"John Meyer" <john@apex-mfg.com>',
+    "to": "procurement@meridiantrade.com",
+    "subject": "Enquiry: Stainless Steel Bolts M10x50 - 5,000 pieces needed",
+    "body": (
+        "Dear Team,\nWe are sourcing Stainless Steel Bolts M10x50.\n"
+        "- Product: Stainless Steel Bolts M10x50\n"
+        "- Quantity required: 5,000 pieces\n"
+        "- Preferred delivery terms: FOB Shanghai\n"
+        "- Specifications: Grade A2-70, DIN 933\n- Delivery location: Ohio, USA\n"
+    ),
+}
 
-def test_health():
-    with TestClient(app) as client:
-        r = client.get("/health")
-        assert r.status_code == 200
-        body = r.json()
-        assert body["status"] == "ok"
-        assert body["poller_enabled"] is False
+
+@pytest.fixture
+def client(fresh_store):
+    with TestClient(app) as c:
+        yield c
 
 
-def test_process_email_endpoint():
-    with TestClient(app) as client:
-        r = client.post(
-            "/process-email",
-            json={"id": "abc", "thread_id": "abc", "from": "a@b.com",
-                  "subject": "hi", "body": "hello"},
-        )
-        assert r.status_code == 200
-        assert r.json()["status"] == "received"
-        assert r.json()["message_id"] == "abc"
+def test_health(client):
+    body = client.get("/health").json()
+    assert body["status"] == "ok"
+    assert body["poller_enabled"] is False
+    assert body["has_db"] is True
+
+
+def test_process_email_endpoint_drafts_outreach(client):
+    r = client.post("/process-email", json=ENQUIRY)
+    assert r.status_code == 200
+    body = r.json()
+    assert body["status"] == "drafted"
+    assert len(body["supplier_quote_request_ids"]) >= 1
+
+
+def test_process_email_endpoint_non_enquiry_logged(client):
+    r = client.post("/process-email", json={
+        "id": "api-ooo-1", "thread_id": "x", "from": "bot@corp.com",
+        "to": "procurement@meridiantrade.com",
+        "subject": "Automatic reply: Out of office", "body": "Away until Monday.",
+    })
+    assert r.status_code == 200
+    assert r.json()["status"] == "logged"
+
+
+def test_supplier_drafts_roundtrip_and_send(client):
+    drafted = client.post("/process-email", json=ENQUIRY).json()
+    thread_id = drafted["email_thread_id"]
+    ids = drafted["supplier_quote_request_ids"]
+
+    got = client.get(f"/enquiry/{thread_id}/supplier-drafts").json()
+    assert got["email_thread_id"] == thread_id
+    assert {d["id"] for d in got["supplier_drafts"]} == set(ids)
+    scores = [d["match_score"] for d in got["supplier_drafts"]]
+    assert scores == sorted(scores, reverse=True)  # best match first
+    assert got["progress"] == {"sent": 0, "total": len(ids)}
+    assert got["original_email"]["subject"] == ENQUIRY["subject"]
+    first = got["supplier_drafts"][0]
+    assert first["draft_fields"] and first["draft_body"]
+
+    sent = client.post(f"/supplier-quote-requests/{ids[0]}/send", json={})
+    assert sent.status_code == 200
+    payload = sent.json()
+    assert payload["status"] == "sent" and payload["transmitted"] is False
+    assert payload["supplier_draft"]["status"] == "sent"
+    assert payload["progress"] == {"sent": 1, "total": len(ids)}
+
+    # second send is a conflict
+    assert client.post(f"/supplier-quote-requests/{ids[0]}/send", json={}).status_code == 409
+
+
+def test_patch_persists_edits(client):
+    drafted = client.post("/process-email", json=ENQUIRY).json()
+    sqr_id = drafted["supplier_quote_request_ids"][0]
+
+    r = client.patch(f"/supplier-quote-requests/{sqr_id}",
+                     json={"draft_subject": "RFQ - edited by operator"})
+    assert r.status_code == 200 and r.json()["draft_subject"] == "RFQ - edited by operator"
+
+    again = client.get(
+        f"/enquiry/{drafted['email_thread_id']}/supplier-drafts"
+    ).json()
+    edited = next(d for d in again["supplier_drafts"] if d["id"] == sqr_id)
+    assert edited["draft_subject"] == "RFQ - edited by operator"
+
+
+def test_suppliers_directory(client):
+    body = client.get("/suppliers").json()
+    assert body["count"] == 18
+    assert all({"id", "name", "specialization"} <= set(s) for s in body["suppliers"])
+
+
+def test_enquiries_desk_list(client):
+    client.post("/process-email", json=ENQUIRY)
+    body = client.get("/enquiries").json()
+    assert body["count"] >= 1
+    mine = next(e for e in body["enquiries"] if e["subject"] == ENQUIRY["subject"])
+    assert mine["status"] == "drafted" and mine["drafts"] >= 1
