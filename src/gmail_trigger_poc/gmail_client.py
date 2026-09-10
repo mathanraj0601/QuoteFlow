@@ -6,6 +6,7 @@ import base64
 import json
 import logging
 import os
+from datetime import UTC
 from typing import Any
 
 from gmail_trigger_poc.config import Settings, get_settings
@@ -22,7 +23,7 @@ def _internal_date_iso(msg: dict[str, Any]) -> str | None:
         from datetime import datetime, timezone
 
         return (
-            datetime.fromtimestamp(int(raw) / 1000, tz=timezone.utc)
+            datetime.fromtimestamp(int(raw) / 1000, tz=UTC)
             .isoformat(timespec="seconds")
         )
     except (ValueError, OverflowError):

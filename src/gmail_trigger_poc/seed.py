@@ -20,7 +20,11 @@ from pathlib import Path
 from gmail_trigger_poc.config import Settings, get_settings
 from gmail_trigger_poc.db import connect, init_db, table_counts
 from gmail_trigger_poc.logging_setup import configure_logging
-from gmail_trigger_poc.vectorstore import Embedder, get_embedder, get_products_collection
+from gmail_trigger_poc.vectorstore import (
+    Embedder,
+    get_embedder,
+    get_products_collection,
+)
 
 logger = logging.getLogger(__name__)
 

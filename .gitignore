@@ -18,6 +18,8 @@ last_history_id.json
 
 # Local databases / vector store (rebuilt by `python -m gmail_trigger_poc.seed`)
 *.db
+*.db-wal
+*.db-shm
 *.sqlite
 *.sqlite3
 chroma_data/

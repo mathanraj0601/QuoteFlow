@@ -15,7 +15,11 @@ import logging
 import sqlite3
 
 from gmail_trigger_poc.config import Settings, get_settings
-from gmail_trigger_poc.vectorstore import Embedder, get_embedder, get_products_collection
+from gmail_trigger_poc.vectorstore import (
+    Embedder,
+    get_embedder,
+    get_products_collection,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -144,7 +148,7 @@ def rerank(
     semantic_similarity = clamp(1 - cosine_distance, 0, 1)   (per matched product)
     category_alignment  = 1.0 if supplier's category is among the vector hits, else similarity
     match_score = 0.60*similarity + 0.15*(rating/5) + 0.25*category_alignment
-                  (x0.93 when the supplier has no priced row for the product)
+                  (x0.90 when the supplier has no priced supplier_products row)
     """
     hit_categories = hit_categories or set()
     best_sim = max(

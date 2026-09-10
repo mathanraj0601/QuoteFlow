@@ -51,34 +51,36 @@ def _matched_view(candidate: dict) -> dict:
     return {k: candidate.get(k) for k in _MATCHED_SUPPLIER_KEYS}
 
 
-def _replayed_result(thread_row, conn) -> dict | None:
-    """If this message was already processed, rebuild its result instead of redoing it."""
-    drafts = list_supplier_drafts(thread_row["id"], conn)
-    if drafts:
-        return {
-            "status": "drafted",
-            "idempotent_replay": True,
-            "email_thread_id": thread_row["id"],
-            "thread_id": thread_row["id"],
-            "supplier_quote_request_ids": [d["id"] for d in drafts],
-            "matched_suppliers": [
-                {"supplier_id": d["supplier_id"], "supplier_name": d["supplier_name"],
-                 "match_score": d["match_score"]}
-                for d in drafts
-            ],
-        }
-    # thread row exists but produced no drafts -> it was a non-enquiry we logged
+def _replayed_result(thread_row, conn) -> dict:
+    """Rebuild a prior result for an already-processed message (no re-work, no re-draft)."""
     try:
         scenario = (json.loads(thread_row["extracted_data_json"] or "{}") or {}).get(
             "scenario", "other"
         )
-    except (json.JSONDecodeError, TypeError, IndexError):
+    except (json.JSONDecodeError, TypeError):
         scenario = "other"
+
+    if scenario != "client_enquiry":
+        return {
+            "status": "logged",
+            "idempotent_replay": True,
+            "email_thread_id": thread_row["id"],
+            "scenario": scenario,
+        }
+
+    drafts = list_supplier_drafts(thread_row["id"], conn)
     return {
-        "status": "logged",
+        "status": "drafted",
         "idempotent_replay": True,
         "email_thread_id": thread_row["id"],
+        "thread_id": thread_row["id"],
         "scenario": scenario,
+        "supplier_quote_request_ids": [d["id"] for d in drafts],
+        "matched_suppliers": [
+            {"supplier_id": d["supplier_id"], "supplier_name": d["supplier_name"],
+             "match_score": d["match_score"]}
+            for d in drafts
+        ],
     }
 
 
@@ -198,4 +200,4 @@ def _process(email_data: dict[str, Any], settings: Settings, conn) -> dict[str, 
     return result
 
 
-__all__ = ["process_email", "bare_email"]
+__all__ = ["bare_email", "process_email"]

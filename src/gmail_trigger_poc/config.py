@@ -114,7 +114,8 @@ class Settings:
         default_factory=lambda: os.getenv("LLM_PROVIDER", "auto").strip().lower()
     )
     llm_model: str = field(default_factory=lambda: os.getenv("LLM_MODEL", "claude-opus-5"))
-    llm_max_tokens: int = field(default_factory=lambda: _int("LLM_MAX_TOKENS", 4000))
+    # Roomy: Opus 5 adaptive thinking tokens count against this alongside the JSON.
+    llm_max_tokens: int = field(default_factory=lambda: _int("LLM_MAX_TOKENS", 8000))
     # Suppliers scoring at/above this against the enquiry each get a draft (v2SQ).
     # Plans state 0.65; we default to 0.50 because (a) MiniLM cosine similarity on
     # short enquiry text lands lower than the plans assumed, (b) the seed catalog

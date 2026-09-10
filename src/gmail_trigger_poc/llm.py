@@ -142,7 +142,7 @@ def _parse_qty(text: str) -> tuple[int | None, str | None]:
     for m in _QTY_RE.finditer(text or ""):
         raw = m.group(1).replace(",", "")
         try:
-            val = int(round(float(raw)))
+            val = round(float(raw))
         except ValueError:
             continue
         if val <= 0:
@@ -361,15 +361,35 @@ class AnthropicProvider:
         self._max_tokens = settings.llm_max_tokens
 
     def _call(self, system: str, user: str) -> dict:
+        # classify/extract/draft are short structured tasks -> effort "low".
+        # Adaptive thinking stays on (default on Opus 5) and its tokens count
+        # against max_tokens, so keep max_tokens roomy (LLM_MAX_TOKENS).
         try:
+            resp = self._client.messages.create(
+                model=self._model,
+                max_tokens=self._max_tokens,
+                output_config={"effort": "low"},
+                system=system,
+                messages=[{"role": "user", "content": user}],
+            )
+        except TypeError:
+            # older SDK without output_config support
             resp = self._client.messages.create(
                 model=self._model,
                 max_tokens=self._max_tokens,
                 system=system,
                 messages=[{"role": "user", "content": user}],
             )
-        except self._anthropic.APIError as e:  # noqa: BLE001 - normalise to LLMError
+        except self._anthropic.APIError as e:
             raise LLMError(f"Claude API call failed: {e}") from e
+
+        stop = getattr(resp, "stop_reason", None)
+        if stop == "refusal":
+            detail = getattr(getattr(resp, "stop_details", None), "category", None)
+            raise LLMError(f"Claude refused the request (category={detail})")
+        if stop == "max_tokens":
+            raise LLMError("Claude response hit max_tokens — raise LLM_MAX_TOKENS")
+
         text = "".join(b.text for b in resp.content if getattr(b, "type", None) == "text")
         try:
             return _extract_json(text)

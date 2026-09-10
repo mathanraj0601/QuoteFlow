@@ -20,11 +20,21 @@ SCHEMA_PATH = Path(__file__).with_name("schema.sql")
 
 
 def connect(settings: Settings | None = None) -> sqlite3.Connection:
-    """Open the QuoteFlow SQLite DB with row access by name + FK enforcement."""
+    """Open the QuoteFlow SQLite DB with row access by name + FK enforcement.
+
+    The poller thread and the HTTP API each hold their own connection, so a
+    write-write overlap is possible; `busy_timeout` makes the loser wait rather
+    than fail immediately, and WAL lets readers run during a write.
+    """
     settings = settings or get_settings()
-    conn = sqlite3.connect(settings.db_file)
+    conn = sqlite3.connect(settings.db_file, timeout=30.0)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute("PRAGMA busy_timeout = 30000")
+    try:
+        conn.execute("PRAGMA journal_mode = WAL")
+    except sqlite3.OperationalError:  # pragma: no cover - e.g. network FS
+        pass
     return conn
 
 

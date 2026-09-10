@@ -136,12 +136,18 @@ def _thread_row(thread_id: int, conn) -> dict:
 
 
 @app.get("/enquiries")
-def list_enquiries() -> dict:
-    """The Desk: inbound client emails with their supplier-outreach progress."""
+def list_enquiries(include_all: bool = False) -> dict:
+    """The Desk: inbound emails the live pipeline has handled + outreach progress.
+
+    By default only rows the live pipeline produced (an extracted `scenario`, or
+    at least one supplier draft) are returned — `?include_all=true` also lists the seed
+    backfill's inbound rows.
+    """
     with _db() as conn:
         rows = conn.execute(
             """
             SELECT et.id, et.subject, et.from_email, et.processed_at,
+                   et.extracted_data_json,
                    COUNT(sqr.id)                                        AS drafts,
                    SUM(CASE WHEN sqr.status='sent' THEN 1 ELSE 0 END)   AS sent
             FROM email_threads et
@@ -153,13 +159,20 @@ def list_enquiries() -> dict:
         ).fetchall()
     enquiries = []
     for r in rows:
+        try:
+            scenario = (json.loads(r["extracted_data_json"] or "{}") or {}).get("scenario")
+        except (json.JSONDecodeError, TypeError):
+            scenario = None
         drafts = r["drafts"] or 0
+        if not include_all and scenario is None and drafts == 0:
+            continue  # seed backfill row, not something the live pipeline touched
         sent = r["sent"] or 0
         enquiries.append({
             "email_thread_id": r["id"],
             "subject": r["subject"],
             "from_email": r["from_email"],
             "processed_at": r["processed_at"],
+            "scenario": scenario,
             "drafts": drafts,
             "sent": sent,
             "status": "drafted" if drafts else "logged",
@@ -188,29 +201,33 @@ def enquiry_supplier_drafts(thread_id: int) -> dict:
     }
 
 
+_PATCHABLE = {"draft_to", "draft_subject", "draft_body", "draft_edit_mode", "fields"}
+
+
+def _validated_edits(payload: dict) -> dict:
+    edits = {k: payload[k] for k in _PATCHABLE if k in payload}
+    if edits.get("draft_edit_mode") not in (None, "fields", "free_text"):
+        raise HTTPException(status_code=400, detail="draft_edit_mode must be 'fields' or 'free_text'")
+    if "fields" in edits and not isinstance(edits["fields"], list):
+        raise HTTPException(status_code=400, detail="fields must be a list")
+    return edits
+
+
 @app.patch("/supplier-quote-requests/{sqr_id}")
 def update_supplier_draft(sqr_id: int, patch: dict = Body(default_factory=dict)) -> dict:
-    """Persist operator edits (to / subject / body / fields) without sending."""
-    allowed = {"draft_to", "draft_subject", "draft_body", "draft_edit_mode"}
-    sets, params = [], []
-    for key in allowed:
-        if key in patch:
-            sets.append(f"{key} = ?")
-            params.append(patch[key])
-    if "fields" in patch:
-        sets.append("draft_fields_json = ?")
-        params.append(json.dumps(patch["fields"]))
-    if not sets:
+    """Persist operator edits (to / subject / body / fields) without sending.
+
+    Editing `fields` while the row is in 'fields' mode re-renders `draft_body`
+    from the template unless an explicit `draft_body` is also supplied.
+    """
+    edits = _validated_edits(patch)
+    if not edits:
         raise HTTPException(status_code=400, detail="no updatable fields in body")
     with _db() as conn:
-        if repository.get_supplier_draft(sqr_id, conn) is None:
-            raise HTTPException(status_code=404, detail=f"no supplier draft {sqr_id}")
-        conn.execute(
-            f"UPDATE supplier_quote_requests SET {', '.join(sets)} WHERE id = ?",
-            [*params, sqr_id],
-        )
-        conn.commit()
-        return repository.get_supplier_draft(sqr_id, conn)
+        updated = repository.apply_draft_edits(sqr_id, edits, conn)
+    if updated is None:
+        raise HTTPException(status_code=404, detail=f"no supplier draft {sqr_id}")
+    return updated
 
 
 @app.post("/supplier-quote-requests/{sqr_id}/send")
@@ -221,6 +238,11 @@ def send_supplier_draft(sqr_id: int, payload: dict = Body(default_factory=dict))
     first, matching the UI's "post current text on send" behaviour (Plan B §6).
     """
     s = get_settings()
+    # accept the UI's {to, subject, body, fields} as well as the draft_* column names
+    edits = _validated_edits({
+        **payload,
+        **{f"draft_{k}": payload[k] for k in ("to", "subject", "body") if k in payload},
+    })
     with _db() as conn:
         draft = repository.get_supplier_draft(sqr_id, conn)
         if draft is None:
@@ -228,21 +250,8 @@ def send_supplier_draft(sqr_id: int, payload: dict = Body(default_factory=dict))
         if draft["status"] == "sent":
             raise HTTPException(status_code=409, detail="already sent")
 
-        updates, params = [], []
-        for src, col in (("to", "draft_to"), ("subject", "draft_subject"), ("body", "draft_body")):
-            if payload.get(src) is not None:
-                updates.append(f"{col} = ?")
-                params.append(payload[src])
-        if payload.get("fields") is not None:
-            updates.append("draft_fields_json = ?")
-            params.append(json.dumps(payload["fields"]))
-        if updates:
-            conn.execute(
-                f"UPDATE supplier_quote_requests SET {', '.join(updates)} WHERE id = ?",
-                [*params, sqr_id],
-            )
-            conn.commit()
-            draft = repository.get_supplier_draft(sqr_id, conn)
+        if edits:
+            draft = repository.apply_draft_edits(sqr_id, edits, conn)
 
         logger.info(
             "SEND (mark-only) SQR id=%s\n    To: %s\n    Subject: %s\n    Body:\n%s",

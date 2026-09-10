@@ -10,14 +10,14 @@ import json
 import logging
 import sqlite3
 import zlib
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from email.utils import parseaddr
 
 logger = logging.getLogger(__name__)
 
 
 def _now() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+    return datetime.now(UTC).isoformat(timespec="seconds")
 
 
 def bare_email(value: str | None) -> str:
@@ -46,18 +46,33 @@ def derive_thread_id(gmail_thread_id: str | None, gmail_message_id: str | None) 
 
 def get_or_create_client(extraction, from_email: str, conn: sqlite3.Connection) -> int:
     email = bare_email(from_email) or "unknown@unknown.invalid"
-    row = conn.execute("SELECT id FROM clients WHERE contact_email = ?", (email,)).fetchone()
-    if row:
-        return row["id"]
+
+    def _lookup() -> int | None:
+        row = conn.execute(
+            "SELECT id FROM clients WHERE contact_email = ?", (email,)
+        ).fetchone()
+        return row["id"] if row else None
+
+    existing = _lookup()
+    if existing is not None:
+        return existing
+
     name = extraction.client_name or (email.split("@")[0] if email else "Unknown")
     company = extraction.client_company or (
         email.split("@")[1] if "@" in email else "Unknown"
     )
-    cur = conn.execute(
-        "INSERT INTO clients (name, company, contact_email, region, order_history_count) "
-        "VALUES (?, ?, ?, ?, 0)",
-        (name, company, email, extraction.destination),
-    )
+    try:
+        cur = conn.execute(
+            "INSERT INTO clients (name, company, contact_email, region, order_history_count) "
+            "VALUES (?, ?, ?, ?, 0)",
+            (name, company, email, extraction.destination),
+        )
+    except sqlite3.IntegrityError:
+        # lost a race (or contact_email already present under a different case path)
+        found = _lookup()
+        if found is None:
+            raise
+        return found
     logger.info("created client id=%s <%s> (%s)", cur.lastrowid, email, company)
     return int(cur.lastrowid)
 
@@ -88,25 +103,32 @@ def insert_inbound_thread(
 
     gmail_thread_id = email_data.get("gmail_thread_id") or email_data.get("thread_id")
     thread_id = derive_thread_id(str(gmail_thread_id) if gmail_thread_id else None, gmail_message_id)
-    cur = conn.execute(
-        """
-        INSERT INTO email_threads
-            (gmail_message_id, thread_id, gmail_thread_id, from_email, to_email, subject,
-             body_text, direction, extracted_data_json, processed_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, 'inbound', ?, ?)
-        """,
-        (
-            gmail_message_id,
-            thread_id,
-            str(gmail_thread_id) if gmail_thread_id else None,
-            bare_email(email_data.get("from")),
-            bare_email(email_data.get("to")) or broker_email,
-            email_data.get("subject"),
-            email_data.get("body"),
-            json.dumps(extraction.as_dict()),
-            _now(),
-        ),
-    )
+    try:
+        cur = conn.execute(
+            """
+            INSERT INTO email_threads
+                (gmail_message_id, thread_id, gmail_thread_id, from_email, to_email, subject,
+                 body_text, direction, extracted_data_json, processed_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 'inbound', ?, ?)
+            """,
+            (
+                gmail_message_id,
+                thread_id,
+                str(gmail_thread_id) if gmail_thread_id else None,
+                bare_email(email_data.get("from")),
+                bare_email(email_data.get("to")) or broker_email,
+                email_data.get("subject"),
+                email_data.get("body"),
+                json.dumps(extraction.as_dict()),
+                _now(),
+            ),
+        )
+    except sqlite3.IntegrityError:
+        # concurrent processing of the same gmail_message_id (UNIQUE) — reuse the row
+        raced = find_thread_by_message_id(gmail_message_id, conn)
+        if raced is None:
+            raise
+        return raced["id"]
     logger.info(
         "email_threads row id=%s (thread_id=%s) scenario=%s",
         cur.lastrowid, thread_id, extraction.scenario,
@@ -190,6 +212,47 @@ def list_supplier_drafts(email_thread_id: int, conn: sqlite3.Connection) -> list
         (email_thread_id,),
     ).fetchall()
     return [_row_to_draft(r) for r in rows]
+
+
+_EDITABLE_COLS = {"draft_to", "draft_subject", "draft_body", "draft_edit_mode"}
+
+
+def apply_draft_edits(sqr_id: int, edits: dict, conn: sqlite3.Connection) -> dict | None:
+    """Persist operator edits to one SQR. Keys: draft_to/draft_subject/draft_body/
+    draft_edit_mode, plus `fields` (list). When `fields` change and the row is in
+    'fields' mode and no explicit body was supplied, `draft_body` is re-rendered
+    from `draft_body_template` so the canonical body never drifts from the fields.
+    """
+    from gmail_trigger_poc.llm import render_body
+
+    current = get_supplier_draft(sqr_id, conn)
+    if current is None:
+        return None
+
+    sets: list[str] = []
+    params: list = []
+    for col in _EDITABLE_COLS:
+        if col in edits and edits[col] is not None:
+            sets.append(f"{col} = ?")
+            params.append(edits[col])
+
+    new_fields = edits.get("fields")
+    if new_fields is not None:
+        sets.append("draft_fields_json = ?")
+        params.append(json.dumps(new_fields))
+        mode = edits.get("draft_edit_mode") or current["draft_edit_mode"]
+        if "draft_body" not in edits and mode == "fields":
+            sets.append("draft_body = ?")
+            params.append(render_body(current["draft_body_template"], new_fields))
+
+    if not sets:
+        return current
+    conn.execute(
+        f"UPDATE supplier_quote_requests SET {', '.join(sets)} WHERE id = ?",
+        [*params, sqr_id],
+    )
+    conn.commit()
+    return get_supplier_draft(sqr_id, conn)
 
 
 def get_supplier_draft(sqr_id: int, conn: sqlite3.Connection) -> dict | None:
