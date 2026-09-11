@@ -96,12 +96,32 @@ _WEB_FALLBACK = _PKG_ROOT / "web" / "index.html"
 if (_REACT_DIST / "assets").is_dir():
     app.mount("/assets", StaticFiles(directory=_REACT_DIST / "assets"), name="assets")
 
+# Favicon + touch-icon: Vite copies frontend/public/* to dist/'s root (not
+# dist/assets/), so they need their own routes alongside the /assets mount.
+_ROOT_STATIC_FILES = {
+    "/favicon.svg": "favicon.svg",
+    "/favicon-32.png": "favicon-32.png",
+    "/favicon-16.png": "favicon-16.png",
+    "/apple-touch-icon.png": "apple-touch-icon.png",
+}
+
 
 @app.get("/", include_in_schema=False)
 def dashboard() -> FileResponse:
     """The Supplier Outreach Desk — a single-page dashboard over all the endpoints."""
     index = _REACT_DIST / "index.html"
     return FileResponse(index if index.is_file() else _WEB_FALLBACK)
+
+
+def _make_root_static_route(filename: str):
+    def _serve() -> FileResponse:
+        return FileResponse(_REACT_DIST / filename)
+    return _serve
+
+
+for _route_path, _filename in _ROOT_STATIC_FILES.items():
+    if (_REACT_DIST / _filename).is_file():
+        app.get(_route_path, include_in_schema=False)(_make_root_static_route(_filename))
 
 
 @contextmanager
