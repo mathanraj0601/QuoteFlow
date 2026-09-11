@@ -76,42 +76,45 @@ def render_body(body_template: str, fields: list[dict]) -> str:
 
 # Tokens the SYSTEM fills (never operator-editable fields). {{supplier_name}} and
 # {{company}} are deliberately excluded: they stay live in a shared draft and are
-# resolved per recipient at send.
+# resolved per recipient at send. `client_name` / `client_company` are NOT here
+# on purpose — the supplier email must never identify the end client (see
+# _LEAK_KEY_RE below), so those tokens are never given a real value to expand to.
 _SYSTEM_TOKENS = frozenset({
-    "product_name", "broker_name", "broker_email", "client_name", "client_company",
+    "product_name", "broker_name", "broker_email",
 })
 
 
 # The house shared-outreach body. Used by the stub, and as the fallback when a
 # real model returns an empty / unusable body_template. {{supplier_name}} is left
 # live (filled per recipient at send); the rest are substituted before storage.
+# Deliberately minimal: stock/availability, the product, and where it ships to —
+# nothing about the client is asked for or mentioned.
 _SHARED_BODY_TEMPLATE = (
     "Hi {{supplier_name}} team,\n\n"
-    "We have a client enquiry that matches your catalogue and would like your "
-    "best quotation.\n\n"
+    "We'd like to check availability and get your best quotation for the "
+    "following.\n\n"
     "- Product: {{product_name}}\n"
-    "- Specifications: {{specifications}}\n"
-    "- Quantity requested: {{quantity}}\n"
-    "- Requested delivery: {{delivery}}\n"
-    "- Requested lead time: {{lead_time}}\n\n"
-    "Please confirm your current unit pricing, MOQ, shipping cost, lead time and "
-    "any applicable certifications for this requirement.\n\n"
+    "- Quantity needed: {{quantity}}\n"
+    "- Shipping location: {{shipping_location}}\n\n"
+    "Please confirm whether you have this in stock, along with your pricing, "
+    "MOQ and lead time.\n\n"
     "Best regards,\n{{broker_name}}\n{{broker_email}}"
 )
 
 
 def _canonical_shared_fields(enquiry: "Extraction", context: dict | None = None) -> list[dict]:
-    """The fixed set of operator-editable fields for a shared outreach draft,
-    valued from the extraction. A value we can't fill is left EMPTY and tagged
-    NEEDS-REVIEW so the UI prompts the operator to type it, rather than showing a
-    raw {{token}} or a vague "(to confirm)" default. `lead_time` is the one we
-    always pre-fill (the supplier answers it), so it never blocks a send.
+    """The fixed, deliberately short set of operator-editable fields for a shared
+    outreach draft: just what a supplier needs to check stock and quote —
+    quantity and shipping location. Nothing about the client (name, company, who
+    they are) is ever a field or a token here; see _LEAK_KEY_RE for the backstop
+    that scrubs it even if a model tries to slip it into the free-text body. A
+    value we can't fill is left EMPTY and tagged NEEDS-REVIEW so the UI prompts
+    the operator to type it in, rather than showing a raw {{token}}.
     """
     ctx = context or {}
     uom = enquiry.unit_of_measure or ctx.get("unit_of_measure") or "unit"
     qty = f"{enquiry.quantity:,} {uom}" if enquiry.quantity else ""
-    specs = _first(enquiry.specifications, ctx.get("product_specifications")) or ""
-    delivery = " / ".join(p for p in (enquiry.delivery_terms, enquiry.destination) if p)
+    shipping_location = enquiry.destination or ctx.get("destination") or ""
 
     def mk(key: str, label: str, value: str) -> dict:
         return {
@@ -121,10 +124,8 @@ def _canonical_shared_fields(enquiry: "Extraction", context: dict | None = None)
         }
 
     return [
-        mk("quantity", "Quantity requested", qty),
-        mk("specifications", "Specifications", specs),
-        mk("delivery", "Requested delivery", delivery),
-        mk("lead_time", "Requested lead time", "(supplier to advise)"),
+        mk("quantity", "Quantity needed", qty),
+        mk("shipping_location", "Shipping location", shipping_location),
     ]
 
 
@@ -415,21 +416,39 @@ based on a client enquiry and that supplier's catalogue row. Reply with ONE JSON
 
 Do not invent prices. Ask the supplier to confirm pricing, MOQ, lead time, certifications."""
 
-_DRAFT_SHARED_SYSTEM = """You draft ONE quote-request email from a procurement broker that will be \
-sent to SEVERAL matched suppliers at once, based on a client enquiry. Reply with ONE JSON object only:
+_DRAFT_SHARED_SYSTEM = """You draft ONE stock-check / quote-request email from a procurement broker, \
+to be sent to SEVERAL matched suppliers at once. Reply with ONE JSON object only, nothing before \
+or after it:
 
   subject: string
   body_template: string  - the email body, plain text with {{tokens}}.
 
-Use ONLY these tokens; every one is substituted automatically, so never expand them yourself
-and never invent new ones:
-  {{supplier_name}} - the recipient; keep the greeting generic, never name one supplier
-  {{product_name}} {{broker_name}} {{broker_email}} - system values
-  {{quantity}} {{specifications}} {{delivery}} {{lead_time}} - the request values the operator edits
+ALLOWED TOKENS - use ONLY these, exactly as written. Every one is substituted automatically, so \
+never expand them yourself and never invent, rename, or add any other {{token}}:
+  {{supplier_name}}   - the recipient; keep the greeting generic, never name one supplier
+  {{product_name}}    - system value, the product being sourced
+  {{broker_name}}     - system value, your sign-off name
+  {{broker_email}}    - system value, your sign-off email
+  {{quantity}}        - how much is needed (the operator can edit this)
+  {{shipping_location}} - where it needs to ship to (the operator can edit this)
 
-Do NOT output a "fields" array. Do NOT put any reference / target / catalogue unit price - a
+WHAT THE EMAIL MAY ASK FOR - nothing more than: (1) whether the supplier has the product in \
+stock / can supply the quantity, (2) their pricing, MOQ, lead time and certifications.
+
+HARD RULE - NEVER MENTION THE CLIENT. This is a broker relationship: the supplier must never \
+learn who the end client is, or anything about them. Do NOT write the client's name, company, \
+industry, location, or the word "client enquiry" tied to any identifying detail. It is fine to \
+say generic things like "we are sourcing" or "we'd like to check availability" - just never say \
+whose order this is for. Do NOT output a {{client_name}}, {{client_company}} or similar token.
+
+Do NOT output a "fields" array. Do NOT put any reference / target / catalogue unit price - a \
 line, a token or a field - anywhere: pricing is exactly what we are asking the suppliers for.
-Ask them to confirm pricing, MOQ, lead time and certifications."""
+
+EXAMPLE of a correct body_template (yours should follow this shape, adjusted to the product):
+"Hi {{supplier_name}} team,\\n\\nWe'd like to check availability and get your best quotation for \
+the following.\\n\\n- Product: {{product_name}}\\n- Quantity needed: {{quantity}}\\n- Shipping \
+location: {{shipping_location}}\\n\\nPlease confirm whether you have this in stock, along with \
+your pricing, MOQ and lead time.\\n\\nBest regards,\\n{{broker_name}}\\n{{broker_email}}\""""
 
 
 def _extract_json(text: str) -> dict:
@@ -540,11 +559,30 @@ def _json_to_draft(
     }
 
 
-# Anything price-ish: we never quote a reference price to the suppliers we're
-# asking to price the job. Catches unit_price, target_price, price_ref, "Ref price", ...
-_PRICE_KEY_RE = re.compile(r"price", re.I)
-# A whole bullet/line whose label is about price and whose value is now empty.
-_EMPTY_PRICE_LINE_RE = re.compile(r"(?im)^[ \t]*[-*•]?[ \t]*[^\n:]*\bprice\b[^\n:]*:[ \t]*$\n?")
+# Anything price- or client-ish: we never quote a reference price to the
+# suppliers we're asking to price the job, and we never let the client's
+# identity reach a supplier — this is the backstop for both, independent of
+# the system prompt. Catches unit_price, target_price, price_ref, "Ref price",
+# client_name, client_company, and any model-invented variant containing
+# either word (e.g. "end_client", "client_ref").
+_LEAK_KEY_RE = re.compile(r"price|client", re.I)
+
+
+def _drop_leak_lines(template: str) -> str:
+    """Remove every WHOLE LINE that carries a price-/client-ish {{token}},
+    rather than just blanking the token in place. A tidy local model puts one
+    token per "- Label: {{token}}" bullet, where blanking would do; a weak one
+    can bury {{client_company}} mid-sentence ("This quote is for {{client_name}}
+    at ...") where blanking leaves a grammatically-broken but still-legible
+    half-sentence. Dropping the line is the only way that's safe either way —
+    and costs nothing, since every field this could remove (quantity, etc.) is
+    still shown to the operator in the structured fields list regardless of
+    whether it's also named inline in the body text.
+    """
+    return "\n".join(
+        line for line in template.splitlines()
+        if not any(_LEAK_KEY_RE.search(t) for t in _TOKEN_RE.findall(line))
+    )
 
 
 def _json_to_shared_draft(data: dict, enquiry: Extraction, settings: Settings) -> dict:
@@ -557,14 +595,15 @@ def _json_to_shared_draft(data: dict, enquiry: Extraction, settings: Settings) -
     the UI prompts the operator. {{supplier_name}} / {{company}} stay live
     (filled per recipient at send); every other {{token}} is either substituted
     from the extraction here or surfaced as a NEEDS-REVIEW field — a raw
-    {{token}} must never reach an input box.
+    {{token}} must never reach an input box. client_name / client_company are
+    deliberately NOT in `fixed`: even if a model outputs {{client_name}} despite
+    the system prompt forbidding it, _drop_leak_lines()/_LEAK_KEY_RE scrub it
+    below rather than ever filling it with the real client's identity.
     """
     fields = _canonical_shared_fields(enquiry)
 
     fixed = {
         "product_name": enquiry.product_description or "the requirement",
-        "client_company": enquiry.client_company or "our client",
-        "client_name": enquiry.client_name or "our client",
         "broker_name": settings.broker_name,
         "broker_email": settings.broker_email,
     }
@@ -573,23 +612,29 @@ def _json_to_shared_draft(data: dict, enquiry: Extraction, settings: Settings) -
     if enquiry.urgency and enquiry.urgency != "normal":
         fixed["urgency"] = enquiry.urgency
 
-    template = str(data.get("body_template") or "").strip() or _SHARED_BODY_TEMPLATE
-    # Kill any price token the model slipped in, then drop the (now-empty) line.
-    price_tokens = {t: "" for t in _TOKEN_RE.findall(template) if _PRICE_KEY_RE.search(t)}
-    body_template = substitute(template, {**fixed, **price_tokens})
-    if price_tokens:
-        body_template = _EMPTY_PRICE_LINE_RE.sub("", body_template)
+    raw_template = str(data.get("body_template") or "").strip() or _SHARED_BODY_TEMPLATE
+    raw_subject = str(data.get("subject") or f"RFQ - {fixed['product_name']}")
 
-    subject = str(data.get("subject") or f"RFQ - {fixed['product_name']}")
-    subject = render_body(
-        substitute(subject, {**fixed, **price_tokens, "supplier_name": "", "company": ""}), fields
-    )
+    # Blank a leak token wherever it shows up (subject included) before anything
+    # else happens, so it can never be filled with a real value.
+    leak_tokens = {
+        t: "" for t in _TOKEN_RE.findall(raw_template) + _TOKEN_RE.findall(raw_subject)
+        if _LEAK_KEY_RE.search(t)
+    }
+
+    body_template = substitute(_drop_leak_lines(raw_template), fixed)
+
+    subject = substitute(raw_subject, {**fixed, **leak_tokens, "supplier_name": "", "company": ""})
+    subject = re.sub(r"[ \t]{2,}", " ", subject).strip(" -")  # tidy up a now-dangling "for"/"at"
+    subject = render_body(subject, fields)
 
     # Any {{token}} still in the body that isn't a per-recipient placeholder and
     # isn't one of our fields -> expose it as a field to fill, never a bare token.
+    # (leak tokens can't reach here — their whole line was already dropped above;
+    # the _LEAK_KEY_RE check stays as a defensive no-op in case a corner case slips by.)
     known = {f["key"] for f in fields} | {"supplier_name", "company"}
     for tok in dict.fromkeys(_TOKEN_RE.findall(body_template)):
-        if tok in known or _PRICE_KEY_RE.search(tok):
+        if tok in known or _LEAK_KEY_RE.search(tok):
             continue
         fields.append({
             "key": tok,
@@ -609,9 +654,17 @@ def _json_to_shared_draft(data: dict, enquiry: Extraction, settings: Settings) -
 
 
 def _shared_draft_user_prompt(enquiry: Extraction, context: dict, settings: Settings) -> str:
+    # client_name / client_company are deliberately withheld from the prompt
+    # itself, not just forbidden by instruction — the model can't leak what it
+    # was never shown.
+    sourcing_request = {
+        k: v for k, v in enquiry.as_dict().items()
+        if k not in ("client_name", "client_company")
+    }
     return (
-        "CLIENT ENQUIRY (extracted):\n"
-        f"{json.dumps(enquiry.as_dict(), indent=2)}\n\n"
+        "SOURCING REQUEST (client identity withheld on purpose - do not ask about "
+        "or refer to who this is for):\n"
+        f"{json.dumps(sourcing_request, indent=2)}\n\n"
         "REPRESENTATIVE CATALOGUE PRODUCT (context only - the email goes to several suppliers):\n"
         f"{json.dumps(context, indent=2, default=str)}\n\n"
         f"Broker: {settings.broker_name} <{settings.broker_email}>"
