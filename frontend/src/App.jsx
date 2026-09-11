@@ -593,7 +593,11 @@ export default function App() {
       </header>
 
       <main>
-        <AnimatePresence mode="wait">
+        {/* popLayout (not "wait"): the incoming view mounts and starts fading in
+            immediately instead of waiting out the outgoing view's exit first —
+            the visible content (and Suppliers' now-cached data) shows up right
+            on click instead of after a sequential exit-then-enter delay. */}
+        <AnimatePresence mode="popLayout">
           <motion.div
             key={view}
             variants={viewSwap}

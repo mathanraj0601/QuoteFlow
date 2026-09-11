@@ -44,9 +44,11 @@ export const toastPop = {
   exit: { opacity: 0, y: 12, scale: 0.98, transition: { duration: 0.16 } },
 };
 
-// Detail panel / view swap.
+// Detail panel / view swap. Kept short and used with mode="popLayout" (not
+// "wait") so switching tabs shows the new content immediately instead of
+// after a sequential exit-then-enter delay.
 export const viewSwap = {
-  hidden: { opacity: 0, y: 8 },
-  show: { opacity: 1, y: 0, transition: { duration: 0.28, ease } },
-  exit: { opacity: 0, y: -6, transition: { duration: 0.16 } },
+  hidden: { opacity: 0, y: 4 },
+  show: { opacity: 1, y: 0, transition: { duration: 0.15, ease } },
+  exit: { opacity: 0, y: -3, transition: { duration: 0.1 } },
 };
