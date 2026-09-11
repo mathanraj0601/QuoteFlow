@@ -148,6 +148,76 @@ function SparkIcon() {
   );
 }
 
+function HamburgerIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <path
+        d="M3 6h18M3 12h18M3 18h18"
+        stroke="currentColor"
+        strokeWidth="2.2"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}
+
+// Small-screen nav: the Desk/Suppliers pills move behind a hamburger button
+// (styles.css swaps them in under the mobile breakpoint) instead of wrapping.
+function MobileNav({ items, view, onSelect }) {
+  const [open, setOpen] = useState(false);
+
+  useEffect(() => {
+    if (!open) return undefined;
+    const onKey = (e) => e.key === "Escape" && setOpen(false);
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open]);
+
+  return (
+    <div className="hamburger-wrap">
+      <motion.button
+        className="btn ghost icon hamburger"
+        {...pressable}
+        onClick={() => setOpen((v) => !v)}
+        aria-label="Menu"
+        aria-haspopup="menu"
+        aria-expanded={open}
+      >
+        <HamburgerIcon />
+      </motion.button>
+      <AnimatePresence>
+        {open && (
+          <>
+            <div className="avatar-scrim" onClick={() => setOpen(false)} />
+            <motion.div
+              className="mobile-nav-menu"
+              role="menu"
+              initial={{ opacity: 0, scale: 0.94, y: -6 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.96, y: -4 }}
+              transition={spring}
+            >
+              {items.map(([key, label]) => (
+                <button
+                  key={key}
+                  role="menuitem"
+                  className={"mobile-nav-item" + (view === key ? " active" : "")}
+                  onClick={() => {
+                    onSelect(key);
+                    setOpen(false);
+                  }}
+                >
+                  {label}
+                </button>
+              ))}
+            </motion.div>
+          </>
+        )}
+      </AnimatePresence>
+    </div>
+  );
+}
+
 function AvatarMenu({ user, onSignOut }) {
   const [open, setOpen] = useState(false);
 
@@ -483,8 +553,13 @@ export default function App() {
       <header>
         <div className="mark">Q</div>
         <div className="title">QuoteFlow</div>
+
+        {/* Mobile: Desk/Suppliers collapse behind a hamburger (styles.css swaps
+            these two in/out at the mobile breakpoint). */}
+        <MobileNav items={NAV} view={view} onSelect={setView} />
+
         <LayoutGroup>
-          <nav>
+          <nav className="nav-desktop">
             {NAV.map(([key, label]) => (
               <button
                 key={key}
@@ -505,10 +580,12 @@ export default function App() {
         </LayoutGroup>
         <div className="spacer" />
         <HealthPill health={health} live={wsConnected} />
+        {/* Simulate email — hidden for now, keeping the dialog + wiring in place.
         <motion.button className="hbtn" {...pressable} onClick={() => setSimOpen(true)}>
           <SparkIcon />
           <span className="lbl-text">Simulate email</span>
         </motion.button>
+        */}
         <ThemeToggle theme={theme} onToggle={toggleTheme} />
         <AvatarMenu user={user} onSignOut={signOut} />
       </header>

@@ -1,9 +1,16 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { motion } from "framer-motion";
 import { api } from "./api.js";
 import { fadeUp } from "./motion.js";
 
-const COLS = ["Name", "Specialisation", "Region", "Rating", "Contact", "Payment terms"];
+const COLS = [
+  { key: "name", label: "Name" },
+  { key: "specialization", label: "Specialisation" },
+  { key: "region", label: "Region" },
+  { key: "rating", label: "Rating" },
+  { key: "contact_email", label: "Contact" },
+  { key: "payment_terms", label: "Payment terms" },
+];
 
 function Stars({ rating }) {
   const r = Math.round(rating || 0);
@@ -31,10 +38,27 @@ function SuppliersSkeleton() {
 export default function Suppliers() {
   const [data, setData] = useState(null);
   const [err, setErr] = useState(null);
+  // Click a column header to sort by it; click again to flip direction.
+  const [sort, setSort] = useState({ key: "name", dir: "asc" });
 
   useEffect(() => {
     api.suppliers().then(setData).catch((e) => setErr(e.message));
   }, []);
+
+  const sorted = useMemo(() => {
+    if (!data) return [];
+    const { key, dir } = sort;
+    const mul = dir === "asc" ? 1 : -1;
+    return [...data.suppliers].sort((a, b) => {
+      const av = a[key];
+      const bv = b[key];
+      if (typeof av === "number" && typeof bv === "number") return (av - bv) * mul;
+      return String(av ?? "").localeCompare(String(bv ?? "")) * mul;
+    });
+  }, [data, sort]);
+
+  const toggleSort = (key) =>
+    setSort((s) => (s.key === key ? { key, dir: s.dir === "asc" ? "desc" : "asc" } : { key, dir: "asc" }));
 
   if (err)
     return (
@@ -56,11 +80,22 @@ export default function Suppliers() {
           <table>
             <tbody>
               <tr>
-                {COLS.map((c) => (
-                  <th key={c}>{c}</th>
-                ))}
+                {COLS.map((c) => {
+                  const active = sort.key === c.key;
+                  return (
+                    <th
+                      key={c.key}
+                      className={"sortable" + (active ? " sort-active" : "")}
+                      onClick={() => toggleSort(c.key)}
+                      aria-sort={active ? (sort.dir === "asc" ? "ascending" : "descending") : "none"}
+                    >
+                      {c.label}
+                      <span className="sort-arrow">{active ? (sort.dir === "asc" ? "▲" : "▼") : ""}</span>
+                    </th>
+                  );
+                })}
               </tr>
-              {data.suppliers.map((s, i) => (
+              {sorted.map((s, i) => (
                 <motion.tr
                   key={s.id}
                   variants={fadeUp}
