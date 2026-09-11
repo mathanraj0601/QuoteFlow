@@ -839,7 +839,7 @@ main {
 .so-row.is-sent { opacity: 0.55; }
 
 /* ---------- suppliers table ---------- */
-.tbl-wrap { overflow-x: auto; }
+.tbl-wrap { overflow-x: auto; overflow-y: auto; max-height: calc(100vh - 210px); overscroll-behavior: contain; }
 table { width: 100%; border-collapse: collapse; font-size: 13px; }
 th, td { text-align: left; padding: 11px 14px; border-bottom: 1px solid var(--border); }
 table tr:first-child th {

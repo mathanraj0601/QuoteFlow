@@ -579,7 +579,9 @@ export default function App() {
           </nav>
         </LayoutGroup>
         <div className="spacer" />
+        {/* Health pill — hidden for now, health polling + wsConnected tracking still run.
         <HealthPill health={health} live={wsConnected} />
+        */}
         {/* Simulate email — hidden for now, keeping the dialog + wiring in place.
         <motion.button className="hbtn" {...pressable} onClick={() => setSimOpen(true)}>
           <SparkIcon />

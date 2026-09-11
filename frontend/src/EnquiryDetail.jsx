@@ -333,6 +333,14 @@ function CloseIcon() {
   );
 }
 
+// Mirrors App.jsx's deskBucket(): "all sent" is computed (every supplier draft
+// sent), never a stored status. Without this the header badge would keep
+// reading "drafted" forever, disagreeing with the Desk row right after a send.
+function enquiryBadge(status, progress) {
+  const sent = status === "drafted" && progress?.total > 0 && progress.sent === progress.total;
+  return sent ? { key: "sent", label: "all sent" } : { key: status, label: status };
+}
+
 export default function EnquiryDetail({ threadId, live, onClose, onActivity, toast }) {
   const [data, setData] = useState(null);
   const [err, setErr] = useState(null);
@@ -369,7 +377,10 @@ export default function EnquiryDetail({ threadId, live, onClose, onActivity, toa
       <div className="phead">
         <h2>
           Enquiry #{data.email_thread_id}
-          {data.status && <span className={"badge " + data.status}>{data.status}</span>}
+          {data.status && (() => {
+            const badge = enquiryBadge(data.status, data.progress);
+            return <span className={"badge " + badge.key}>{badge.label}</span>;
+          })()}
         </h2>
         <motion.button
           className="btn ghost icon"
