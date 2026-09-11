@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { AnimatePresence, LayoutGroup, motion } from "framer-motion";
 import { api, openProgressSocket } from "./api.js";
+import { fadeUp, pressable, spring, staggerContainer, viewSwap } from "./motion.js";
 import EnquiryDetail from "./EnquiryDetail.jsx";
 import Suppliers from "./Suppliers.jsx";
 import SimulateDialog from "./SimulateDialog.jsx";
@@ -22,33 +24,71 @@ function initials(name) {
   return ((parts[0]?.[0] || "") + (parts[1]?.[0] || parts[0]?.[1] || "")).toUpperCase();
 }
 
+function SparkIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <path
+        d="M12 3v4M12 17v4M3 12h4M17 12h4M6 6l2.5 2.5M15.5 15.5 18 18M18 6l-2.5 2.5M8.5 15.5 6 18"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}
+
 function AvatarMenu({ user, onSignOut }) {
   const [open, setOpen] = useState(false);
+
+  useEffect(() => {
+    if (!open) return undefined;
+    const onKey = (e) => e.key === "Escape" && setOpen(false);
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open]);
+
   return (
     <div className="avatar-wrap">
-      <button className="avatar" onClick={() => setOpen((v) => !v)} title={user}>
+      <motion.button
+        className="avatar"
+        {...pressable}
+        onClick={() => setOpen((v) => !v)}
+        title={user}
+        aria-haspopup="menu"
+        aria-expanded={open}
+      >
         {initials(user)}
-      </button>
-      {open && (
-        <>
-          <div className="avatar-scrim" onClick={() => setOpen(false)} />
-          <div className="avatar-menu">
-            <div className="avatar-menu-head">
-              <b>Signed in</b>
-              <span>{user}</span>
-            </div>
-            <button
-              className="avatar-menu-item"
-              onClick={() => {
-                setOpen(false);
-                onSignOut();
-              }}
+      </motion.button>
+      <AnimatePresence>
+        {open && (
+          <>
+            <div className="avatar-scrim" onClick={() => setOpen(false)} />
+            <motion.div
+              className="avatar-menu"
+              role="menu"
+              initial={{ opacity: 0, scale: 0.94, y: -6 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.96, y: -4 }}
+              transition={spring}
             >
-              Sign out
-            </button>
-          </div>
-        </>
-      )}
+              <div className="avatar-menu-head">
+                <b>Signed in</b>
+                <span>{user}</span>
+              </div>
+              <button
+                className="avatar-menu-item"
+                role="menuitem"
+                onClick={() => {
+                  setOpen(false);
+                  onSignOut();
+                }}
+              >
+                Sign out
+              </button>
+            </motion.div>
+          </>
+        )}
+      </AnimatePresence>
     </div>
   );
 }
@@ -65,11 +105,18 @@ function useToast() {
 }
 
 function HealthPill({ health, live }) {
-  if (!health) return <span className="pill err">backend down</span>;
+  if (!health)
+    return (
+      <span className="pill err">
+        <span className="dot" />
+        backend down
+      </span>
+    );
   const poller = health.poller_alive ? "live" : health.poller_enabled ? "starting" : "off";
   return (
     <span className={"pill " + (live ? "ok" : "warn")}>
-      {live ? "● live" : "○ polling"} · poller {poller} · llm:{health.llm_provider}
+      <span className="dot" />
+      {live ? "live" : "polling"} · poller {poller} · llm:{health.llm_provider}
     </span>
   );
 }
@@ -98,6 +145,58 @@ const FILTERS = [
   ["drafted", "Drafted"],
   ["sent", "Fully sent"],
 ];
+
+function DealRow({ e, selected, onSelect }) {
+  const bucket = deskBucket(e);
+  return (
+    <motion.div
+      layout
+      variants={fadeUp}
+      exit={{ opacity: 0, height: 0, transition: { duration: 0.18 } }}
+      className={"deal" + (selected ? " sel" : "")}
+      onClick={() => onSelect(e.email_thread_id)}
+    >
+      <div className="row1">
+        <div className="subj">{e.subject || "(no subject)"}</div>
+        <span className={"badge " + bucket}>
+          {bucket === "logged" ? e.scenario || "logged" : BADGE_TEXT[bucket]}
+        </span>
+      </div>
+      <div className="from">{e.from_email}</div>
+      <div className="meta">
+        <span>#{e.email_thread_id}</span>
+        {bucket === "new" || bucket === "processing" ? (
+          <span className="live-stage">
+            {e.pipeline_stage === "drafting" || e.pipeline_stage === "matched"
+              ? `drafting ${e.drafts}/${e.drafts_total || "?"}`
+              : e.pipeline_stage || "queued"}
+          </span>
+        ) : (
+          <span>{e.drafts} draft(s)</span>
+        )}
+        {e.drafts > 0 && (
+          <span>
+            {e.sent}/{e.drafts} sent
+          </span>
+        )}
+      </div>
+    </motion.div>
+  );
+}
+
+function DeskSkeleton() {
+  return (
+    <div className="skel-list">
+      {[0, 1, 2, 3].map((i) => (
+        <div className="skel-row" key={i}>
+          <div className="skel w-70" />
+          <div className="skel w-45" />
+          <div className="skel w-30" />
+        </div>
+      ))}
+    </div>
+  );
+}
 
 function Desk({ selectedId, onSelect, toast, refreshKey, live }) {
   const [enquiries, setEnquiries] = useState(null);
@@ -159,49 +258,33 @@ function Desk({ selectedId, onSelect, toast, refreshKey, live }) {
           ))}
         </div>
         {err && <div className="empty">{err}</div>}
+        {!err && !enquiries && <DeskSkeleton />}
         {!err && enquiries?.length === 0 && <div className="empty">No enquiries yet.</div>}
         {!err && enquiries?.length > 0 && shown.length === 0 && (
           <div className="empty">Nothing in “{filter}”.</div>
         )}
-        {!err && !enquiries && <div className="empty">loading…</div>}
-        {shown.map((e) => {
-          const bucket = deskBucket(e);
-          return (
-            <div
-              key={e.email_thread_id}
-              className={"deal" + (selectedId === e.email_thread_id ? " sel" : "")}
-              onClick={() => onSelect(e.email_thread_id)}
-            >
-              <div className="row1">
-                <div className="subj">{e.subject || "(no subject)"}</div>
-                <span className={"badge " + bucket}>
-                  {bucket === "logged"
-                    ? e.scenario || "logged"
-                    : BADGE_TEXT[bucket]}
-                </span>
-              </div>
-              <div className="from">{e.from_email}</div>
-              <div className="meta">
-                <span>#{e.email_thread_id}</span>
-                {bucket === "new" || bucket === "processing" ? (
-                  <span className="live-stage">
-                    {e.pipeline_stage === "drafting" || e.pipeline_stage === "matched"
-                      ? `drafting ${e.drafts}/${e.drafts_total || "?"}`
-                      : e.pipeline_stage || "queued"}
-                  </span>
-                ) : (
-                  <span>{e.drafts} draft(s)</span>
-                )}
-                {e.drafts > 0 && <span>{e.sent}/{e.drafts} sent</span>}
-              </div>
-            </div>
-          );
-        })}
+        {!err && enquiries && (
+          <LayoutGroup>
+            <motion.div variants={staggerContainer(0.035)} initial="hidden" animate="show">
+              <AnimatePresence initial={false}>
+                {shown.map((e) => (
+                  <DealRow
+                    key={e.email_thread_id}
+                    e={e}
+                    selected={selectedId === e.email_thread_id}
+                    onSelect={onSelect}
+                  />
+                ))}
+              </AnimatePresence>
+            </motion.div>
+          </LayoutGroup>
+        )}
       </div>
 
       <div className="panel">
         {selectedId ? (
           <EnquiryDetail
+            key={selectedId}
             threadId={selectedId}
             live={live}
             onClose={() => onSelect(null)}
@@ -215,6 +298,11 @@ function Desk({ selectedId, onSelect, toast, refreshKey, live }) {
     </div>
   );
 }
+
+const NAV = [
+  ["desk", "Desk"],
+  ["suppliers", "Suppliers"],
+];
 
 export default function App() {
   const [user, setUser] = useState(readUser);
@@ -283,58 +371,92 @@ export default function App() {
       <header>
         <div className="mark">Q</div>
         <div className="title">QuoteFlow</div>
-        <nav>
-          <button className={view === "desk" ? "active" : ""} onClick={() => setView("desk")}>
-            Desk
-          </button>
-          <button
-            className={view === "suppliers" ? "active" : ""}
-            onClick={() => setView("suppliers")}
-          >
-            Suppliers
-          </button>
-        </nav>
+        <LayoutGroup>
+          <nav>
+            {NAV.map(([key, label]) => (
+              <button
+                key={key}
+                className={view === key ? "active" : ""}
+                onClick={() => setView(key)}
+              >
+                {view === key && (
+                  <motion.span
+                    layoutId="nav-pill"
+                    className="nav-pill"
+                    transition={spring}
+                  />
+                )}
+                {label}
+              </button>
+            ))}
+          </nav>
+        </LayoutGroup>
         <div className="spacer" />
         <HealthPill health={health} live={wsConnected} />
-        <button className="hbtn" onClick={() => setSimOpen(true)}>
-          Simulate email
-        </button>
+        <motion.button className="hbtn" {...pressable} onClick={() => setSimOpen(true)}>
+          <SparkIcon />
+          <span className="lbl-text">Simulate email</span>
+        </motion.button>
         <AvatarMenu user={user} onSignOut={signOut} />
       </header>
 
       <main>
-        {view === "desk" && (
-          <Desk
-            selectedId={selectedId}
-            onSelect={setSelectedId}
-            toast={toast}
-            refreshKey={deskKey}
-            live={liveTick}
-          />
-        )}
-        {view === "suppliers" && <Suppliers />}
+        <AnimatePresence mode="wait">
+          <motion.div
+            key={view}
+            variants={viewSwap}
+            initial="hidden"
+            animate="show"
+            exit="exit"
+          >
+            {view === "desk" && (
+              <Desk
+                selectedId={selectedId}
+                onSelect={setSelectedId}
+                toast={toast}
+                refreshKey={deskKey}
+                live={liveTick}
+              />
+            )}
+            {view === "suppliers" && <Suppliers />}
+          </motion.div>
+        </AnimatePresence>
       </main>
 
-      {simOpen && (
-        <SimulateDialog
-          onClose={() => setSimOpen(false)}
-          onDelivered={(res) => {
-            setSimOpen(false);
-            refreshDesk();
-            toast(
-              `${res.status}` +
-                (res.supplier_quote_request_ids
-                  ? ` · ${res.supplier_quote_request_ids.length} draft(s)`
-                  : ""),
-            );
-            setView("desk");
-            if (res.email_thread_id) setSelectedId(res.email_thread_id);
-          }}
-          toast={toast}
-        />
-      )}
+      <AnimatePresence>
+        {simOpen && (
+          <SimulateDialog
+            onClose={() => setSimOpen(false)}
+            onDelivered={(res) => {
+              setSimOpen(false);
+              refreshDesk();
+              toast(
+                `${res.status}` +
+                  (res.supplier_quote_request_ids
+                    ? ` · ${res.supplier_quote_request_ids.length} draft(s)`
+                    : ""),
+              );
+              setView("desk");
+              if (res.email_thread_id) setSelectedId(res.email_thread_id);
+            }}
+            toast={toast}
+          />
+        )}
+      </AnimatePresence>
 
-      {toastMsg && <div className="toast">{toastMsg}</div>}
+      <AnimatePresence>
+        {toastMsg && (
+          <motion.div
+            className="toast"
+            initial={{ opacity: 0, y: 24, scale: 0.96 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: 12, scale: 0.98 }}
+            transition={spring}
+          >
+            {toastMsg}
+          </motion.div>
+        )}
+      </AnimatePresence>
     </>
   );
 }
