@@ -141,6 +141,12 @@ function SharedOutreach({ threadId, draft, matched, progress, onActivity, toast 
   const body = composeBody(draft.body_template, fields);
   const setFieldValue = (i, value) =>
     setFields((fs) => fs.map((f, j) => (j === i ? { ...f, value } : f)));
+
+  // Fields the model/extraction couldn't fill — the operator must type these in
+  // before the draft can go out (matches the NEEDS-REVIEW tag from the backend).
+  const isEmpty = (f) => !String(f.value ?? "").trim();
+  const needsInput = fields.filter(isEmpty);
+
   const toggle = (id) =>
     setSelected((cur) => {
       const next = new Set(cur);
@@ -167,7 +173,7 @@ function SharedOutreach({ threadId, draft, matched, progress, onActivity, toast 
 
   async function send() {
     const ids = [...selected];
-    if (!ids.length) return;
+    if (!ids.length || needsInput.length) return;
     setBusy(true);
     try {
       // persist the current text first, then send to the ticked suppliers
@@ -234,13 +240,25 @@ function SharedOutreach({ threadId, draft, matched, progress, onActivity, toast 
                   <span className={"tag " + f.tag}>{f.tag}</span>
                 </div>
                 <input
-                  className={f.tag === "NEEDS-REVIEW" ? "rev" : ""}
+                  className={isEmpty(f) ? "rev" : ""}
                   value={f.value}
+                  placeholder={`Enter ${f.label.toLowerCase()}…`}
                   onChange={(e) => setFieldValue(i, e.target.value)}
                 />
               </motion.div>
             ))}
           </motion.div>
+
+          {needsInput.length > 0 && (
+            <div className="so-needs">
+              <b>{needsInput.length}</b>
+              <span>
+                field{needsInput.length === 1 ? "" : "s"} still need a value —{" "}
+                {needsInput.map((f) => f.label).join(", ")}. Fill{" "}
+                {needsInput.length === 1 ? "it" : "them"} in before sending.
+              </span>
+            </div>
+          )}
 
           <div className="so-suppliers">
             <div className="so-suppliers-head">
@@ -286,7 +304,12 @@ function SharedOutreach({ threadId, draft, matched, progress, onActivity, toast 
             <motion.button
               className="btn primary"
               {...pressable}
-              disabled={busy || selected.size === 0}
+              disabled={busy || selected.size === 0 || needsInput.length > 0}
+              title={
+                needsInput.length > 0
+                  ? `Fill in: ${needsInput.map((f) => f.label).join(", ")}`
+                  : undefined
+              }
               onClick={send}
             >
               {busy && <span className="spinner" />}
@@ -403,6 +426,10 @@ export default function EnquiryDetail({ threadId, live, onClose, onActivity, toa
           }}
           toast={toast}
         />
+      ) : data.status === "logged" ? (
+        <div className="empty">
+          Logged as not a client enquiry — nothing to draft.
+        </div>
       ) : (
         <div className="empty">
           No supplier cleared the match threshold for this enquiry.

@@ -598,6 +598,23 @@ main {
 .fields input { width: 100%; font-size: 13px; }
 .fields input.rev { border-color: rgba(248, 113, 113, 0.5); background: rgba(248, 113, 113, 0.06); }
 .fields input.rev:focus { box-shadow: 0 0 0 3px var(--danger-bg); }
+.fields input::placeholder { color: var(--text-faint); }
+.fields input.rev::placeholder { color: rgba(248, 113, 113, 0.7); }
+
+.so-needs {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  background: var(--warn-bg);
+  border: 1px solid rgba(251, 191, 36, 0.4);
+  border-radius: var(--r-sm);
+  padding: 9px 12px;
+  margin: 12px 0;
+  font-size: 12px;
+  color: var(--text);
+  line-height: 1.5;
+}
+.so-needs b { color: var(--warn); font-weight: 800; }
 
 .actions { display: flex; gap: 8px; margin-top: 14px; }
 .sent-note {
