@@ -233,10 +233,20 @@ def find_matches(
                 },
             )
 
+    # Every same-category supplier gets the (higher-similarity) specialization
+    # candidate too, even one already present via `catalog` — a supplier whose
+    # OWN priced product wasn't the best vector hit (e.g. they carry USB-C
+    # connectors but the query was about PCB boards) would otherwise be scored
+    # on that weak product-specific similarity and lost, despite being just as
+    # valid a same-category match as the category leader. `rerank`'s
+    # best-per-supplier dedup below picks whichever of the two scores higher,
+    # so this never double-counts a supplier — it just stops the catalog join's
+    # incidental inclusion from silently blocking their fair shot at the
+    # specialization score.
     extra = _sql_suppliers_for_categories(
         sorted(hit_categories),
         conn,
-        exclude_supplier_ids={c["supplier_id"] for c in catalog},
+        exclude_supplier_ids=set(),
         product_by_category=product_by_category,
     )
     ranked = rerank(catalog + extra, distance_by_product, hit_categories=hit_categories)
