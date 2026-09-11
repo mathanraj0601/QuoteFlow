@@ -35,14 +35,29 @@ function SuppliersSkeleton() {
   );
 }
 
+// Module-level, not state: survives Suppliers unmounting when you switch tabs
+// (the Desk/Suppliers views are conditionally mounted, so this component is
+// torn down and rebuilt every time). Without it, every single visit after the
+// first re-shows the skeleton and re-fetches from scratch, which is most of
+// what "taking a while to load" actually was — the real request only takes a
+// few ms. A background refetch still runs on every mount to stay current.
+let cachedSuppliers = null;
+
 export default function Suppliers() {
-  const [data, setData] = useState(null);
+  const [data, setData] = useState(cachedSuppliers);
   const [err, setErr] = useState(null);
   // Click a column header to sort by it; click again to flip direction.
   const [sort, setSort] = useState({ key: "name", dir: "asc" });
 
   useEffect(() => {
-    api.suppliers().then(setData).catch((e) => setErr(e.message));
+    api
+      .suppliers()
+      .then((d) => {
+        cachedSuppliers = d;
+        setData(d);
+        setErr(null);
+      })
+      .catch((e) => setErr(e.message));
   }, []);
 
   const sorted = useMemo(() => {
@@ -60,7 +75,10 @@ export default function Suppliers() {
   const toggleSort = (key) =>
     setSort((s) => (s.key === key ? { key, dir: s.dir === "asc" ? "desc" : "asc" } : { key, dir: "asc" }));
 
-  if (err)
+  // Only a fatal, panel-replacing error if we have nothing cached to fall
+  // back on — a background refresh failing shouldn't blank out a table the
+  // operator was already looking at.
+  if (err && !data)
     return (
       <div className="panel">
         <div className="empty">{err}</div>
