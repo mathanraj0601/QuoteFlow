@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { motion, useMotionValue, useSpring, useTransform } from "framer-motion";
 import { api, composeBody } from "./api.js";
 import { fadeUp, pressable, staggerContainer, viewSwap } from "./motion.js";
@@ -158,6 +158,20 @@ function SharedOutreach({ threadId, draft, matched, progress, onActivity, toast 
   const toggleAll = () =>
     setSelected(allPendingTicked ? new Set() : new Set(pending.map((m) => m.supplier_id)));
 
+  // The header checkbox reflects every supplier, not just the pending ones:
+  // already-sent + currently-ticked = "accounted for". All accounted for ->
+  // checked; none -> unchecked; some but not all -> indeterminate (the usual
+  // tri-state "select all" behaviour), so "2/2 already sent" reads as fully
+  // checked instead of a misleading empty box.
+  const sentCount = matched.length - pending.length;
+  const accountedFor = sentCount + selected.size;
+  const allAccountedFor = matched.length > 0 && accountedFor === matched.length;
+  const partiallyAccountedFor = accountedFor > 0 && !allAccountedFor;
+  const selectAllRef = useRef(null);
+  useEffect(() => {
+    if (selectAllRef.current) selectAllRef.current.indeterminate = partiallyAccountedFor;
+  }, [partiallyAccountedFor]);
+
   async function save() {
     setBusy(true);
     try {
@@ -264,14 +278,18 @@ function SharedOutreach({ threadId, draft, matched, progress, onActivity, toast 
             <div className="so-suppliers-head">
               <label className="so-check">
                 <input
+                  ref={selectAllRef}
                   type="checkbox"
-                  checked={allPendingTicked}
+                  checked={allAccountedFor}
                   onChange={toggleAll}
                   disabled={pending.length === 0}
                 />
                 <span>Suppliers ({matched.length})</span>
               </label>
-              <span className="so-count">{selected.size} selected</span>
+              <span className="so-count">
+                {selected.size} selected
+                {sentCount > 0 ? ` · ${sentCount} sent` : ""}
+              </span>
             </div>
             {matched.map((m) => {
               const sent = m.status === "sent";
