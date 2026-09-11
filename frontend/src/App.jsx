@@ -24,6 +24,117 @@ function initials(name) {
   return ((parts[0]?.[0] || "") + (parts[1]?.[0] || parts[0]?.[1] || "")).toUpperCase();
 }
 
+// ---------- theme (light / dark) ----------
+// No stored choice -> follows the OS (styles.css has the matching
+// `@media (prefers-color-scheme: light)` block). An explicit toggle click
+// stamps data-theme on <html> and wins over the OS from then on.
+const THEME_KEY = "qf_theme";
+
+function systemTheme() {
+  try {
+    return window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
+  } catch {
+    return "dark";
+  }
+}
+
+function storedTheme() {
+  try {
+    return localStorage.getItem(THEME_KEY);
+  } catch {
+    return null;
+  }
+}
+
+function applyTheme(theme) {
+  const root = document.documentElement;
+  if (theme) root.setAttribute("data-theme", theme);
+  else root.removeAttribute("data-theme");
+}
+
+function useTheme() {
+  const [theme, setThemeState] = useState(() => storedTheme() || systemTheme());
+
+  // Land the explicit choice (if any) on <html> before first paint's worth of
+  // caring; CSS itself already renders correctly either way via the media query.
+  useEffect(() => {
+    applyTheme(storedTheme());
+  }, []);
+
+  // No stored preference yet -> keep tracking the OS if it changes underneath us.
+  useEffect(() => {
+    if (storedTheme()) return undefined;
+    let mq;
+    try {
+      mq = window.matchMedia("(prefers-color-scheme: light)");
+    } catch {
+      return undefined;
+    }
+    const onChange = () => setThemeState(systemTheme());
+    mq.addEventListener?.("change", onChange);
+    return () => mq.removeEventListener?.("change", onChange);
+  }, []);
+
+  const setTheme = useCallback((next) => {
+    setThemeState(next);
+    applyTheme(next);
+    try {
+      localStorage.setItem(THEME_KEY, next);
+    } catch {
+      /* private mode — the toggle still works for this tab */
+    }
+  }, []);
+
+  const toggle = useCallback(
+    () => setTheme(theme === "light" ? "dark" : "light"),
+    [theme, setTheme],
+  );
+
+  return [theme, toggle];
+}
+
+function SunIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <circle cx="12" cy="12" r="4" stroke="currentColor" strokeWidth="2" />
+      <path
+        d="M12 2v2.4M12 19.6V22M4.9 4.9l1.7 1.7M17.4 17.4l1.7 1.7M2 12h2.4M19.6 12H22M4.9 19.1l1.7-1.7M17.4 6.6l1.7-1.7"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}
+
+function MoonIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <path
+        d="M20.5 14.5A8.5 8.5 0 1 1 9.5 3.5a6.7 6.7 0 0 0 11 11Z"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+function ThemeToggle({ theme, onToggle }) {
+  return (
+    <motion.button
+      className="btn ghost icon"
+      {...pressable}
+      onClick={onToggle}
+      aria-label={theme === "light" ? "Switch to dark mode" : "Switch to light mode"}
+      title={theme === "light" ? "Switch to dark mode" : "Switch to light mode"}
+    >
+      {theme === "light" ? <SunIcon /> : <MoonIcon />}
+    </motion.button>
+  );
+}
+
 function SparkIcon() {
   return (
     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
@@ -305,6 +416,7 @@ const NAV = [
 ];
 
 export default function App() {
+  const [theme, toggleTheme] = useTheme();
   const [user, setUser] = useState(readUser);
   const [view, setView] = useState("desk");
   const [health, setHealth] = useState(undefined);
@@ -397,6 +509,7 @@ export default function App() {
           <SparkIcon />
           <span className="lbl-text">Simulate email</span>
         </motion.button>
+        <ThemeToggle theme={theme} onToggle={toggleTheme} />
         <AvatarMenu user={user} onSignOut={signOut} />
       </header>
 
