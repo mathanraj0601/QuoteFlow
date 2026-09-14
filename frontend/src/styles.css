@@ -216,7 +216,8 @@ body {
 }
 
 /* flex/grid children must be allowed to shrink; long unbroken text must wrap */
-.grid > *, .row1, .meta, .phead, .sc1, .mrow { min-width: 0; }
+.grid > *, .row1, .meta, .phead, .sc1, .mrow,
+.dash-grid > *, .dash-stats > *, .dash-donut-row > *, .legend, .trend-col { min-width: 0; }
 .subj, .from, .txt, .kv, .mbody, .smeta, .sent-note, .trow p, .trow h4,
 .so-name, .so-email { overflow-wrap: anywhere; }
 
@@ -901,6 +902,71 @@ th.sortable.sort-active { color: var(--accent-2); }
     text-align: left;
   }
 }
+
+/* ---------- dashboard ---------- */
+/* align-items left at the default `stretch` (unlike `.grid`) so the two
+   chart panels sharing a row match height instead of each hugging its own
+   (shorter/taller) content. */
+.dash-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+.dash-chart-panel { display: flex; flex-direction: column; }
+.dash-donut-row, .trend-bars { flex: 1; }
+.dash-stats-panel, .dash-table-panel { grid-column: 1 / -1; }
+@media (max-width: 900px) { .dash-grid { grid-template-columns: 1fr; } }
+
+.dash-stats { display: flex; flex-wrap: wrap; gap: 10px; padding: 14px 16px; }
+.stat-card {
+  flex: 1 1 118px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  padding: 12px 14px;
+  cursor: pointer;
+  font-family: inherit;
+  text-align: left;
+  transition: border-color 0.16s ease, background 0.16s ease;
+}
+.stat-card:hover { border-color: var(--border-strong); background: var(--surface-2); }
+.stat-card.active { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
+.stat-card.readonly { cursor: default; }
+.stat-card.readonly:hover { border-color: var(--border); background: var(--surface-1); }
+.stat-value { font-size: 20px; font-weight: 800; color: var(--text); line-height: 1.1; }
+.stat-label { font-size: 10.5px; color: var(--text-faint); font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; }
+
+.dash-donut-row { display: flex; align-items: center; gap: 22px; padding: 16px; flex-wrap: wrap; }
+.donut { flex-shrink: 0; }
+.donut-total { font-size: 22px; font-weight: 800; fill: var(--text); font-family: var(--font); }
+.donut-total-lbl { font-size: 9px; fill: var(--text-faint); text-transform: uppercase; letter-spacing: 0.06em; font-family: var(--font); }
+.legend { display: flex; flex-direction: column; gap: 4px; flex: 1; min-width: 150px; }
+.legend-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: none;
+  border: none;
+  padding: 5px 6px;
+  border-radius: var(--r-sm);
+  cursor: pointer;
+  font-family: inherit;
+  text-align: left;
+  color: var(--text-soft);
+  transition: background 0.14s ease;
+}
+.legend-item:hover { background: var(--surface-1); }
+.legend-item.active { background: var(--accent-soft); color: var(--text); }
+.legend-swatch { width: 10px; height: 10px; border-radius: 3px; flex-shrink: 0; }
+.legend-lbl { flex: 1; font-size: 12px; font-weight: 600; }
+.legend-val { font-size: 12px; font-weight: 800; color: var(--text); }
+
+.trend-bars { display: flex; align-items: flex-end; gap: 5px; height: 130px; padding: 4px 16px 16px; }
+.trend-col { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; height: 100%; min-width: 0; }
+.trend-bar { width: 100%; max-width: 20px; background: var(--accent-grad); border-radius: 4px 4px 1px 1px; min-height: 2px; }
+.trend-lbl { font-size: 8.5px; color: var(--text-faint); margin-top: 6px; white-space: nowrap; }
+
+.tbl-wrap.dash-tbl-wrap { max-height: 420px; }
 
 /* ---------- dialog ---------- */
 .backdrop {

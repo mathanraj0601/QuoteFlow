@@ -4,8 +4,10 @@ import { api, openProgressSocket } from "./api.js";
 import { fadeUp, pressable, spring, staggerContainer, viewSwap } from "./motion.js";
 import EnquiryDetail from "./EnquiryDetail.jsx";
 import Suppliers from "./Suppliers.jsx";
+import Dashboard from "./Dashboard.jsx";
 import SimulateDialog from "./SimulateDialog.jsx";
 import Login from "./Login.jsx";
+import { deskBucket, rowBadge } from "./status.js";
 
 const AUTH_KEY = "qf_user";
 const readUser = () => {
@@ -302,23 +304,6 @@ function HealthPill({ health, live }) {
   );
 }
 
-// One place that decides an enquiry's Desk bucket + badge, so the filter chips
-// and the card badge can never disagree. "sent" is computed (every draft sent),
-// never a stored status — matches the backend's `all_sent`.
-function deskBucket(e) {
-  if (e.status === "drafted" && e.drafts > 0 && e.sent === e.drafts) return "sent";
-  if (e.status === "new" || e.status === "processing" || e.status === "drafted")
-    return e.status;
-  return "logged";
-}
-
-const BADGE_TEXT = {
-  new: "new",
-  processing: "processing",
-  drafted: "drafted",
-  sent: "all sent",
-};
-
 const FILTERS = [
   ["all", "All"],
   ["new", "New"],
@@ -339,9 +324,7 @@ function DealRow({ e, selected, onSelect }) {
     >
       <div className="row1">
         <div className="subj">{e.subject || "(no subject)"}</div>
-        <span className={"badge " + bucket}>
-          {bucket === "logged" ? e.scenario || "logged" : BADGE_TEXT[bucket]}
-        </span>
+        <span className={"badge " + bucket}>{rowBadge(e)}</span>
       </div>
       <div className="from">{e.from_email}</div>
       <div className="meta">
@@ -481,6 +464,7 @@ function Desk({ selectedId, onSelect, toast, refreshKey, live }) {
 }
 
 const NAV = [
+  ["dashboard", "Dashboard"],
   ["desk", "Desk"],
   ["suppliers", "Suppliers"],
 ];
@@ -605,6 +589,7 @@ export default function App() {
             animate="show"
             exit="exit"
           >
+            {view === "dashboard" && <Dashboard live={liveTick} />}
             {view === "desk" && (
               <Desk
                 selectedId={selectedId}
