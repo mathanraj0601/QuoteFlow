@@ -472,7 +472,7 @@ const NAV = [
 export default function App() {
   const [theme, toggleTheme] = useTheme();
   const [user, setUser] = useState(readUser);
-  const [view, setView] = useState("desk");
+  const [view, setView] = useState("dashboard");
   const [health, setHealth] = useState(undefined);
   const [selectedId, setSelectedId] = useState(null);
   const [simOpen, setSimOpen] = useState(false);
@@ -500,7 +500,7 @@ export default function App() {
     }
     setUser(null);
     setSelectedId(null);
-    setView("desk");
+    setView("dashboard");
   }, []);
 
   useEffect(() => {
