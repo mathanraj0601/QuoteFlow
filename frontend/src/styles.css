@@ -909,7 +909,12 @@ th.sortable.sort-active { color: var(--accent-2); }
    (shorter/taller) content. */
 .dash-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
 .dash-chart-panel { display: flex; flex-direction: column; }
-.dash-donut-row, .trend-bars { flex: 1; }
+/* flex-grow only (not the `flex: 1` shorthand) - that shorthand resets
+   flex-basis to 0%, which on a column flex item overrides an explicit
+   height, and .trend-bars sets height:130px. flex-basis staying `auto`
+   keeps that height as the base size while still growing into any extra
+   room the grid-stretch fix above hands it on desktop. */
+.dash-donut-row, .trend-bars { flex-grow: 1; }
 .dash-stats-panel, .dash-table-panel { grid-column: 1 / -1; }
 @media (max-width: 900px) { .dash-grid { grid-template-columns: 1fr; } }
 
@@ -936,7 +941,7 @@ th.sortable.sort-active { color: var(--accent-2); }
 .stat-value { font-size: 20px; font-weight: 800; color: var(--text); line-height: 1.1; }
 .stat-label { font-size: 10.5px; color: var(--text-faint); font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; }
 
-.dash-donut-row { display: flex; align-items: center; gap: 22px; padding: 16px; flex-wrap: wrap; }
+.dash-donut-row { display: flex; align-items: center; justify-content: center; gap: 22px; padding: 16px; flex-wrap: wrap; }
 .donut { flex-shrink: 0; }
 .donut-total { font-size: 22px; font-weight: 800; fill: var(--text); font-family: var(--font); }
 .donut-total-lbl { font-size: 9px; fill: var(--text-faint); text-transform: uppercase; letter-spacing: 0.06em; font-family: var(--font); }
